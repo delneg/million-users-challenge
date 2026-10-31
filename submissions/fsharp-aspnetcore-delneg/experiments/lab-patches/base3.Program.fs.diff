@@ -1,0 +1,37 @@
+--- a/src/Program.fs
++++ b/src/Program.fs
+@@ -2,6 +2,7 @@
+ module Program
+ 
+ open System
++open System.Buffers
+ open System.Buffers.Text
+ open System.Diagnostics
+ open System.Globalization
+@@ -36,15 +37,17 @@
+     let response = ctx.Response
+     response.StatusCode <- status
+     response.ContentType <- "application/json"
+-    if json.Length > 1024 && ctx.Request.Headers.AcceptEncoding.ToString().Contains "gzip" then
+-        let compressed = new MemoryStream()
+-        using (new GZipStream(compressed, CompressionLevel.Fastest, leaveOpen = true)) (fun gzip -> gzip.Write json)
+-        response.Headers.ContentEncoding <- "gzip"
+-        response.ContentLength <- compressed.Length
+-        response.Body.WriteAsync(compressed.GetBuffer(), 0, int compressed.Length)
+-    else
+-        response.ContentLength <- json.Length
+-        response.Body.WriteAsync(json, 0, json.Length)
++    let bytes =
++        if json.Length > 1024 && ctx.Request.Headers.AcceptEncoding.ToString().Contains "gzip" then
++            let compressed = new MemoryStream(json.Length)
++            using (new GZipStream(compressed, CompressionLevel.Fastest, leaveOpen = true)) (fun gzip -> gzip.Write json)
++            response.Headers.ContentEncoding <- "gzip"
++            ArraySegment(compressed.GetBuffer(), 0, int compressed.Length)
++        else ArraySegment json
++    response.ContentLength <- bytes.Count
++    // Not flushed here: Kestrel sends headers and body together when the handler returns.
++    response.BodyWriter.Write(bytes.AsSpan())
++    Task.CompletedTask
+ 
+ let fail ctx status message = send ctx status { error = message }
+ 

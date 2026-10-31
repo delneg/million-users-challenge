@@ -26,7 +26,8 @@ structures and libraries per use case, then the second-look knobs (DB pool, Work
 
 ## Experiments
 
-Format: id, what, numbers (interleaved, reps), LOC (`wc -l src/Program.fs`), verdict.
+Format: id, what, numbers (interleaved, reps), LOC (`wc -l src/Program.fs`), verdict. Every variant's diff vs `80d24c8`
+is in `experiments/lab-patches/` (e.g. `json1.Program.fs.diff` + `aot5.Server.fsproj.diff` = the AOT build).
 
 ### Bars (batch 1, item 1), 31 Oct: ours `80d24c8`, the C# example, the two best Rust submissions
 
@@ -143,9 +144,9 @@ Use case -> what was tried (all 42/42 on both port orders, gzip bodies checked) 
 - **L14 JSON write, unflushed `BodyWriter.Write`** instead of `Body.WriteAsync` (base2, STJ kept; 232 lines, +3):
   96.8 vs 95.1 us/req, **+1.8%** (+2.2, -1.5, +4.7), user instructions +6.5%. Kestrel's end-of-request flush plus
   the `IBufferWriter` copy cost more than the flushed write. **Discarded.**
-- **L15 gzip buffer sized up front** (`new MemoryStream(json.Length)` instead of growing; base3, 0 lines): +2.1% in
-  d0 (+3.1, +3.4, -0.3), +2.9% in d2 (+5.9, +0.2, +2.5). Zeroing a 5 KB array beats 4 growth steps of 256 B..4 KB?
-  No: it is one bigger allocation per feed, and it measured worse twice. **Discarded.**
+- **L15 gzip buffer sized up front** (`new MemoryStream(json.Length)` instead of growing from 256 B; base3, 0 lines):
+  +2.1% in d0 (+3.1, +3.4, -0.3), +2.9% in d2 (+5.9, +0.2, +2.5). Worse twice; one 5 KB zeroed allocation per feed
+  does not beat the growth steps. **Discarded.**
 - **L16 pooled buffers, `Microsoft.IO.RecyclableMemoryStream` 4.0.1**, STJ serializing into it as an
   `IBufferWriter`, gzip into a second one (base4; 237 lines, +8, +1 package): 94.8 vs 96.1 us/req, **-1.3%** (+0.6,
   -3.0, -1.4), kcycles -2.9% (+1.4, -5.9, -4.1). Under the 5% bar for 8 lines. **Discarded** (re-measured with

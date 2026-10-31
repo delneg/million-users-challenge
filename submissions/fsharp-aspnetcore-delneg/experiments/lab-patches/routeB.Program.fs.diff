@@ -1,0 +1,59 @@
+--- a/src/Program.fs
++++ b/src/Program.fs
+@@ -125,8 +125,8 @@
+ // ---- Handlers ----
+ 
+ // inline: the handler lambda is expanded in place, no closure per request (+2% CPU without; worklog)
+-let inline withId (ctx: HttpContext) ([<InlineIfLambda>] handler: int64 -> Task) =
+-    match positiveId (string ctx.Request.RouteValues["id"]) with
++let inline withId (ctx: HttpContext) (idText: string) ([<InlineIfLambda>] handler: int64 -> Task) =
++    match positiveId idText with
+     | Some id -> handler id
+     | None -> fail ctx 400 "invalid post id"
+ 
+@@ -147,7 +147,7 @@
+     while! reader.ReadAsync() do posts.Add(readPost reader)
+     return! send ctx 200 { posts = posts } }
+ 
+-let getPost (db: NpgsqlDataSource) (ctx: HttpContext) : Task = withId ctx (fun id -> task {
++let getPost (db: NpgsqlDataSource) idText (ctx: HttpContext) : Task = withId ctx idText (fun id -> task {
+     use cmd = db.CreateCommand postSql
+     cmd.Parameters.AddWithValue id |> ignore
+     use! reader = cmd.ExecuteReaderAsync()
+@@ -178,7 +178,7 @@
+         let post = { id = reader.GetInt64 0; body = body; created_at = iso (reader.GetDateTime 1); author = user.username; like_count = 0 }
+         return! send ctx 201 { post = post } }
+ 
+-let like (db: NpgsqlDataSource) (user: User) (ctx: HttpContext) : Task = withId ctx (fun id -> task {
++let like idText (db: NpgsqlDataSource) (user: User) (ctx: HttpContext) : Task = withId ctx idText (fun id -> task {
+     use cmd = db.CreateCommand insertLikeSql
+     cmd.Parameters.AddWithValue user.userId |> ignore
+     cmd.Parameters.AddWithValue id |> ignore
+@@ -213,16 +213,19 @@
+     let app = builder.Build()
+     app.UseExceptionHandler(fun errors -> errors.Run(fun ctx -> fail ctx 500 "internal server error")) |> ignore
+ 
+-    let authed handler = RequestDelegate(fun ctx ->
++    let authed handler (ctx: HttpContext) =
+         match authenticate key ctx with
+         | Ok user -> handler db user ctx
+-        | Error message -> fail ctx 401 message)
+-    app.MapGet("/health", RequestDelegate(health db)) |> ignore
+-    app.MapGet("/feed", RequestDelegate(feed db)) |> ignore
+-    app.MapGet("/posts/{id}", RequestDelegate(getPost db)) |> ignore
+-    app.MapPost("/posts", authed createPost) |> ignore
+-    app.MapPost("/posts/{id}/like", authed like) |> ignore
+-    app.MapFallback(RequestDelegate(fun ctx -> fail ctx 404 "not found")) |> ignore
++        | Error message -> fail ctx 401 message
++    // The five routes, by method and path segments ("/posts/7/like" -> [| ""; "posts"; "7"; "like" |])
++    app.Run(fun ctx ->
++        match ctx.Request.Method, ctx.Request.Path.Value.Split '/' with
++        | "GET", [| ""; "health" |] -> health db ctx
++        | "GET", [| ""; "feed" |] -> feed db ctx
++        | "GET", [| ""; "posts"; id |] -> getPost db id ctx
++        | "POST", [| ""; "posts" |] -> authed createPost ctx
++        | "POST", [| ""; "posts"; id; "like" |] -> authed (like id) ctx
++        | _ -> fail ctx 404 "not found")
+ 
+     printfn "cores=%d db_pool=%d server_gc=%b ports=%A" Environment.ProcessorCount poolSize Runtime.GCSettings.IsServerGC ports
+     app.Run()

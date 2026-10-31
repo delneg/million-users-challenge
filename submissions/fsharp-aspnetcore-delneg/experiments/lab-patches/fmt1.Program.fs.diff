@@ -1,0 +1,150 @@
+--- a/src/Program.fs
++++ b/src/Program.fs
+@@ -2,6 +2,7 @@
+ module Program
+ 
+ open System
++open System.Buffers
+ open System.Buffers.Text
+ open System.Diagnostics
+ open System.Globalization
+@@ -19,34 +20,46 @@
+ open Microsoft.Extensions.Logging
+ open Npgsql
+ 
+-// ---- JSON bodies: the field names are the keys, in this order ----
++// ---- JSON bodies, written with Utf8JsonWriter in the SPEC's key order (no reflection, so it also runs under Native AOT) ----
+ 
+-type Post = { id: int64; body: string; created_at: string; author: string; like_count: int }
+-type Feed = { posts: ResizeArray<Post> }
+-type OnePost = { post: Post }
+-type Liked = { liked: bool; already_liked: bool; post_id: int64 }
+-type Health = { status: string; db: string; uptime_s: int64 }
+-type Degraded = { status: string; db: string; error: string }
+-type Error = { error: string }
++type Post = { id: int64; body: string; created_at: DateTime; author: string; like_count: int }
+ 
+-// Only the feed (~5 KB) is worth gzipping; setting up a deflate stream costs more than it saves on the small
+-// bodies (worklog e4). Compressed in memory, so every response has a Content-Length.
+-let send (ctx: HttpContext) (status: int) (body: 'T) : Task =
+-    let json = JsonSerializer.SerializeToUtf8Bytes body
++// timestamptz arrives as a UTC DateTime with microseconds. The round-trip format ("O", the fast one) is
++// "2025-12-31T23:59:19.4090000Z": its first 23 bytes plus "Z" are the SPEC's milliseconds, truncated.
++let writeCreatedAt (w: Utf8JsonWriter) (t: DateTime) =
++    let utf8 = Array.zeroCreate<byte> 28
++    let mutable length = 0
++    t.TryFormat(Span utf8, &length, "O") |> ignore
++    utf8[23] <- byte 'Z'
++    w.WriteString("created_at", ReadOnlySpan(utf8, 0, 24))
++
++let writePost (w: Utf8JsonWriter) (p: Post) =
++    w.WriteStartObject()
++    w.WriteNumber("id", p.id); w.WriteString("body", p.body); writeCreatedAt w p.created_at
++    w.WriteString("author", p.author); w.WriteNumber("like_count", p.like_count)
++    w.WriteEndObject()
++
++// Sends one JSON object; `fields` writes its members. Only the feed (~5 KB) is worth gzipping; setting up a deflate
++// stream costs more than it saves on the small bodies (worklog e4). In memory, so every response has a Content-Length.
++let send (ctx: HttpContext) (status: int) (fields: Utf8JsonWriter -> unit) : Task =
++    let body = new MemoryStream 256
++    using (new Utf8JsonWriter(body)) (fun w -> w.WriteStartObject(); fields w; w.WriteEndObject())
+     let response = ctx.Response
+     response.StatusCode <- status
+     response.ContentType <- "application/json"
+-    if json.Length > 1024 && ctx.Request.Headers.AcceptEncoding.ToString().Contains "gzip" then
+-        let compressed = new MemoryStream()
+-        using (new GZipStream(compressed, CompressionLevel.Fastest, leaveOpen = true)) (fun gzip -> gzip.Write json)
+-        response.Headers.ContentEncoding <- "gzip"
+-        response.ContentLength <- compressed.Length
+-        response.Body.WriteAsync(compressed.GetBuffer(), 0, int compressed.Length)
+-    else
+-        response.ContentLength <- json.Length
+-        response.Body.WriteAsync(json, 0, json.Length)
++    let bytes =
++        if body.Length > 1024L && ctx.Request.Headers.AcceptEncoding.ToString().Contains "gzip" then
++            let compressed = new MemoryStream()
++            using (new GZipStream(compressed, CompressionLevel.Fastest, leaveOpen = true)) (fun gzip -> gzip.Write(body.GetBuffer(), 0, int body.Length))
++            response.Headers.ContentEncoding <- "gzip"
++            compressed
++        else body
++    response.ContentLength <- bytes.Length
++    // Not flushed here: Kestrel sends headers and body together when the handler returns.
++    response.BodyWriter.Write(ReadOnlySpan(bytes.GetBuffer(), 0, int bytes.Length))
++    Task.CompletedTask
+ 
+-let fail ctx status message = send ctx status { error = message }
++let fail ctx status (message: string) = send ctx status (fun w -> w.WriteString("error", message))
+ 
+ let stringProp (e: JsonElement) (name: string) =
+     match e.TryGetProperty name with
+@@ -65,11 +78,8 @@
+ let insertPostSql = "INSERT INTO posts (user_id, body) VALUES ($1, $2) RETURNING id, created_at"
+ let insertLikeSql = "INSERT INTO likes (user_id, post_id) VALUES ($1, $2) ON CONFLICT (user_id, post_id) DO NOTHING"
+ 
+-// timestamptz arrives as a UTC DateTime with microseconds; "fff" truncates to milliseconds.
+-let iso (t: DateTime) = t.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture)
+-
+ let readPost (r: Data.Common.DbDataReader) =
+-    { id = r.GetInt64 0; body = r.GetString 1; created_at = iso (r.GetDateTime 2); author = r.GetString 3; like_count = r.GetInt32 4 }
++    { id = r.GetInt64 0; body = r.GetString 1; created_at = r.GetDateTime 2; author = r.GetString 3; like_count = r.GetInt32 4 }
+ 
+ // DATABASE_URL is postgres://user:pass@host:port/db; Npgsql takes a keyword connection string.
+ let connectionString (url: string) poolSize =
+@@ -136,23 +146,24 @@
+     try
+         use cmd = db.CreateCommand "SELECT 1"
+         let! _ = cmd.ExecuteScalarAsync()
+-        return! send ctx 200 { Health.status = "ok"; db = "ok"; uptime_s = int64 started.Elapsed.TotalSeconds }
++        return! send ctx 200 (fun w ->
++            w.WriteString("status", "ok"); w.WriteString("db", "ok"); w.WriteNumber("uptime_s", int64 started.Elapsed.TotalSeconds))
+     with ex ->
+-        return! send ctx 503 { Degraded.status = "degraded"; db = "unreachable"; error = ex.Message } }
++        return! send ctx 503 (fun w -> w.WriteString("status", "degraded"); w.WriteString("db", "unreachable"); w.WriteString("error", ex.Message)) }
+ 
+ let feed (db: NpgsqlDataSource) (ctx: HttpContext) : Task = task {
+     use cmd = db.CreateCommand feedSql
+     use! reader = cmd.ExecuteReaderAsync()
+     let posts = ResizeArray 20
+     while! reader.ReadAsync() do posts.Add(readPost reader)
+-    return! send ctx 200 { posts = posts } }
++    return! send ctx 200 (fun w -> w.WriteStartArray "posts"; posts.ForEach(fun p -> writePost w p); w.WriteEndArray()) }
+ 
+ let getPost (db: NpgsqlDataSource) (ctx: HttpContext) : Task = withId ctx (fun id -> task {
+     use cmd = db.CreateCommand postSql
+     cmd.Parameters.AddWithValue id |> ignore
+     use! reader = cmd.ExecuteReaderAsync()
+     match! reader.ReadAsync() with
+-    | true -> return! send ctx 200 { post = readPost reader }
++    | true -> return! send ctx 200 (fun w -> w.WritePropertyName "post"; writePost w (readPost reader))
+     | false -> return! fail ctx 404 "post not found" })
+ 
+ // "malformed JSON body" vs "body is required" needs the raw document, not model binding.
+@@ -175,8 +186,8 @@
+         cmd.Parameters.AddWithValue body |> ignore
+         use! reader = cmd.ExecuteReaderAsync()
+         let! _ = reader.ReadAsync()
+-        let post = { id = reader.GetInt64 0; body = body; created_at = iso (reader.GetDateTime 1); author = user.username; like_count = 0 }
+-        return! send ctx 201 { post = post } }
++        let post = { id = reader.GetInt64 0; body = body; created_at = reader.GetDateTime 1; author = user.username; like_count = 0 }
++        return! send ctx 201 (fun w -> w.WritePropertyName "post"; writePost w post) }
+ 
+ let like (db: NpgsqlDataSource) (user: User) (ctx: HttpContext) : Task = withId ctx (fun id -> task {
+     use cmd = db.CreateCommand insertLikeSql
+@@ -184,7 +195,8 @@
+     cmd.Parameters.AddWithValue id |> ignore
+     try
+         let! inserted = cmd.ExecuteNonQueryAsync()
+-        return! send ctx (if inserted > 0 then 201 else 200) { liked = true; already_liked = (inserted = 0); post_id = id }
++        return! send ctx (if inserted > 0 then 201 else 200) (fun w ->
++            w.WriteBoolean("liked", true); w.WriteBoolean("already_liked", (inserted = 0)); w.WriteNumber("post_id", id))
+     with :? PostgresException as e when e.SqlState = PostgresErrorCodes.ForeignKeyViolation ->
+         return! fail ctx 404 "post not found" })
+ 
+@@ -224,6 +236,6 @@
+     app.MapPost("/posts/{id}/like", authed like) |> ignore
+     app.MapFallback(RequestDelegate(fun ctx -> fail ctx 404 "not found")) |> ignore
+ 
+-    printfn "cores=%d db_pool=%d server_gc=%b ports=%A" Environment.ProcessorCount poolSize Runtime.GCSettings.IsServerGC ports
++    Console.WriteLine $"cores={Environment.ProcessorCount} db_pool={poolSize} server_gc={Runtime.GCSettings.IsServerGC} ports={String.Join(',', ports)}"
+     app.Run()
+     0

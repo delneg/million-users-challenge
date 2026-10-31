@@ -1,0 +1,10 @@
+--- a/src/Program.fs
++++ b/src/Program.fs
+@@ -224,6 +224,6 @@
+     app.MapPost("/posts/{id}/like", authed like) |> ignore
+     app.MapFallback(RequestDelegate(fun ctx -> fail ctx 404 "not found")) |> ignore
+ 
+-    printfn "cores=%d db_pool=%d server_gc=%b ports=%A" Environment.ProcessorCount poolSize Runtime.GCSettings.IsServerGC ports
++    Console.WriteLine $"cores={Environment.ProcessorCount} db_pool={poolSize} server_gc={Runtime.GCSettings.IsServerGC} ports={String.Join(',', ports)}"
+     app.Run()
+     0

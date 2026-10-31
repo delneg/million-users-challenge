@@ -1,0 +1,14 @@
+--- a/src/Server.fsproj
++++ b/src/Server.fsproj
+@@ -5,9 +5,11 @@
+     <InvariantGlobalization>true</InvariantGlobalization>
+     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
++    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+   </PropertyGroup>
+   <ItemGroup>
+     <Compile Include="Program.fs" />
++    <TrimmerRootAssembly Include="Server" />
+   </ItemGroup>
+   <ItemGroup>
+     <PackageReference Include="Npgsql" Version="10.0.3" />
