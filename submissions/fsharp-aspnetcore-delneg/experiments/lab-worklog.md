@@ -103,13 +103,16 @@ Round a2 repeated aot3 vs base: +11.1% (+6.9, +15.4, +11.1).
 - **L21 AOT + static PGO from the framework's own profile**: the runtime pack ships
   `microsoft.netcore.app.runtime.linux-x64/.../tools/StandardOptimizationData.mibc`; `IlcPgoOptimize` looks for
   `mibc/` in the ILCompiler pack (absent), so it is passed as a `<MibcFile Include="$(NuGetPackageRoot)/...">` item
-  (aot4; 1 fsproj line, no code). Round a2b (2 of 3 rounds at the time of writing): aot3 111.6, aot4 107.1 us/req, i.e.
-  **-4% vs plain AOT, still +11.8% vs JIT** (+14.3, +9.3). 42/42.
+  (aot4; 1 fsproj line, no code). Round a2b (3 rounds, base 94.9): aot3 111.2 (+17.2%), aot4 106.7 us/req, i.e.
+  **-4% vs plain AOT, still +12.5% vs JIT** (+14.3, +9.3, +14.0). Round a2c (base 96.1): aot4 +9.2% (+9.7, +8.7,
+  +9.1). 42/42.
 - **L22 AOT + a `.mibc` traced from our own app** (`lab-scripts/pgo-trace.sh`: the JIT build of the same source
   under the screen load, `DOTNET_ReadyToRun=0`, `dotnet-trace` with `0x1E000080018:5`, then `0x1F000080018:5`;
   `dotnet-pgo` 11.0.0-preview.6 from the dotnet-eng feed, it is not on nuget.org). Both traces gave 11.8k methods
   and **"Methods with any profile data: 0"** (no block counts, no class histograms): the binary came out
-  byte-identical to aot4. Time-boxed here: even a working own profile would be a committed binary `.mibc`, and the
+  byte-identical to aot4 (a2b measured that identical binary, as aot5, at +9.3% vs aot4's +12.5%: AOT pairs vary
+  by ~3 points between arms of the same binary). A second trace (aot5b, a2c) gave +9.2% (+12.3, +0.8, +14.4), the
+  same as aot4 in that round. Time-boxed here: even a working own profile would be a committed binary `.mibc`, and the
   framework profile closes only a third of the gap.
 
 **AOT verdict: discarded for CPU.** It works (42/42), it halves startup (0.35-0.39 s vs 0.65-0.76) and saves ~45 MB
@@ -143,6 +146,22 @@ What the JIT did (`JitDisasmSummary`, base, 18k users): 8,616 compilations; of t
 (Kestrel, Npgsql, STJ), and a higher call-count threshold plausibly gives more methods real profiles (checked in
 `jitsum-cct`). Warm-up: the ramp window (0-20 s) costs ~104 us/req vs ~96 steady, and its p99 is ~95-100 ms (vs
 10-40 later): tier-up is done within ~20 s, so no warm-up code is worth adding (grader runs ramp >= 60 s).
+
+Round c1 (confirmation, 7 arms x 4 interleaved rounds, base 96.1 us/req, 336 kcycles; all 42/42 builds/env):
+
+| arm | us/req | vs base (pairs) | kcycles | reading |
+|---|---|---|---|---|
+| `TC_CallCountThreshold=0x3E8` (1000) | 95.1 | -1.0% (-2.9, +4.2, -1.9, -3.5) | -1.2% | with j1: 7 pairs, mean -2.1%, 6 of 7 negative; marginal |
+| `TC_CallCountThreshold=0x100` (256) | 95.5 | -0.6% (-3.8, +3.6, -0.6, -1.5) | -1.3% | noise |
+| `TC_CallCountThreshold=0x2710` (10k) | 95.2 | -0.9% (-4.5, +1.6, -1.9, +1.2) | -1.4% | noise; ramp window worse (117 vs 105 us/req) |
+| own-assembly R2R (`PublishReadyToRun`) | 95.2 | -0.9% (-4.5, +4.4, -3.2, -0.2) | -0.7% | j2's -3.8% does not hold; startup 0.55 vs 0.68 s |
+| R2R + cct 1000 | 97.0 | +1.0% (-0.1, +5.7, +1.9, -3.6) | +1.7% | no |
+| composite R2R incl. framework (self-contained, crossgen2 `--parallelism:1`) | 96.1 | +0.1% (-6.7, +6.6, +2.1, -1.6) | +0.3% | no; +13 MB RSS, and crossgen2 needs ~2+ GB at build |
+
+`jitsum-cct` (`JitDisasmSummary` with cct 1000): our hot methods still end as "Tier1 with Synthesized PGO"; fewer
+Tier1 compilations (874 vs 1013), so a higher threshold does not give our code real profiles; whatever it saves is
+in the framework's tiering. **Verdict: nothing kept from item 2.** The cct one-liner is the only candidate (~-1 to
+-2%, at the noise floor of a 4-round A/B here); one more base-vs-cct round (c2) is queued after b1.
 
 ### Data structures and libraries (batch 1, item 4), 31 Oct
 
