@@ -15,6 +15,7 @@ for ports in "3000 3001" "3001 3000"; do
   PORT=$1 EXTRA_PORT=$2 bash test/run.sh submissions/fsharp-aspnetcore-delneg-conf 2>&1 | grep -E "FAIL|want|got|passed=|rror|healthy|xception" | head -20
 done
 psql -qX -d postgres -c "DROP DATABASE IF EXISTS feed_gz WITH (FORCE)" -c "CREATE DATABASE feed_gz OWNER feed TEMPLATE feed_seed" >/dev/null
+for i in $(seq 40); do ss -ltn | grep -q ":3100 " || break; sleep 0.5; done   # the previous check's server may still be exiting
 DATABASE_URL=postgres://feed:feed@127.0.0.1:5432/feed_gz JWT_SECRET=million-users-challenge HOST=127.0.0.1 PORT=3100 bash "$S/start.sh" > /tmp/mlab-gz.log 2>&1 &
 P=$!
 for i in $(seq 60); do curl -sf http://127.0.0.1:3100/health >/dev/null && break; sleep 0.5; done
@@ -22,6 +23,6 @@ for p in /feed /posts/1 /posts/250000 /nope; do
   a=$(curl -s http://127.0.0.1:3100$p | md5sum); b=$(curl -s -H "Accept-Encoding: gzip" http://127.0.0.1:3100$p | gunzip -f | md5sum)
   [ "$a" = "$b" ] && [ "$a" != "$(printf "" | md5sum)" ] && echo "gzip $p ok" || echo "gzip $p FAIL"
 done
-kill $P; pkill -P $P 2>/dev/null; sleep 1; pkill -f "fsharp-aspnetcore-delneg-conf/out/Server" 2>/dev/null
+kill $P; pkill -P $P 2>/dev/null; for i in $(seq 20); do kill -0 $P 2>/dev/null || break; sleep 0.5; done; pkill -f "fsharp-aspnetcore-delneg-conf/out/Server" 2>/dev/null
 psql -qX -d postgres -c "DROP DATABASE IF EXISTS feed_gz WITH (FORCE)" -c "DROP DATABASE IF EXISTS feed_test WITH (FORCE)" >/dev/null
 true
