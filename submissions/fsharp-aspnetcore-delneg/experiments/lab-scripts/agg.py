@@ -29,12 +29,13 @@ for arm in order:
     rs = runs[arm]
     f = lambda k: [x[k] for x in rs.values() if x[k] is not None]
     us = f('us')
+    if not us: print(f'{arm:>10} no results'); continue
     line = (f'{arm:>10} n={len(rs)} us={mean(us):6.1f} ({min(us):.1f}-{max(us):.1f}) cg={mean(f("cg")):6.1f} ki={mean(f("ki")):6.1f} kc={mean(f("kc")):6.1f} '
             f'p95/p99={mean(f("p95")):.1f}/{mean(f("p99")):.1f} pg={mean(f("pg")):.1f} lg={mean(f("lg")):.0f}% util={mean(f("util")):.0f}% '
             f'rss={mean(f("rss"))/1024:.0f} up={mean(f("up")):.2f} early={mean(f("eus")):.1f} ep99={mean(f("ep99")):.0f}'
             + (' ABORTED' if any(x['abort'] for x in rs.values()) else '') + (f' err={max(f("err"))}%' if f('err') and max(f('err')) > 0 else ''))
     if arm != base:
-        pairs = [(rs[r]['us'] - runs[base][r]['us']) / runs[base][r]['us'] * 100 for r in rs if r in runs[base]]
+        pairs = [(rs[r]['us'] - runs[base][r]['us']) / runs[base][r]['us'] * 100 for r in rs if r in runs[base] and rs[r]['us'] and runs[base][r]['us']]
         kp = [(rs[r]['kc'] - runs[base][r]['kc']) / runs[base][r]['kc'] * 100 for r in rs if r in runs[base] and rs[r]['kc'] and runs[base][r]['kc']]
         line += f'  vs {base}: us {mean(pairs):+.1f}% [{", ".join(f"{p:+.1f}" for p in pairs)}] kc {mean(kp):+.1f}% [{", ".join(f"{p:+.1f}" for p in kp)}]'
     print(line)
