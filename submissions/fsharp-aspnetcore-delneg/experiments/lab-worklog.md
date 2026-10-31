@@ -196,3 +196,42 @@ Use case -> what was tried (all 42/42 on both port orders, gzip bodies checked) 
   into UTF-8, cut to ms, +6 lines: would need >= 5% for its lines, and DateTime formatting is ~1% of busy cycles).
 - Arenas: .NET has no maintained arena allocator for managed objects; gen0 is the bump allocator, so the GC knobs
   (batch 2) are the arena experiment.
+
+### Batch 2: DB pool, GC (Workstation, gen0size, DATAS), 31 Oct
+
+Round b1: 7 arms x 4 interleaved rounds, the `80d24c8` build, env only, `COUNTERS=1` (dotnet-counters per run,
+`counters.py`). Default pool on the 2 server CPUs is 16. Base 96.2 us/req, 338 kcycles, 11.0 KB allocated/request.
+
+| arm | us/req | vs base (pairs) | kcycles | GCs per 100k req (gen0/gen1), pause | p99 ms | idle RSS |
+|---|---|---|---|---|---|---|
+| base (Server GC, DATAS default, pool 16) | 96.2 | | 338 | 8.2-8.4 / 0, 2.3% (r3: **34 / 13, 5.1%**) | 41 | 373 MB |
+| `DB_POOL=8` | 96.4 | +0.3% (+0.3, +3.8, -2.6, -0.3) | -0.5% | 8 / 0 (r2: 34 / 13) | 46 (p95 14 vs 10) | 374 |
+| `DB_POOL=32` | 97.7 | +1.6% (+1.3, +3.4, +0.8, +1.0) | +2.1% | 8 / 0 (r3: 36 / 13) | 41; pg +9% us/req | 374 |
+| Workstation GC (`gcServer=0`) | 99.4 | +3.4% (+3.2, +5.0, -0.9, +6.3) | +6.0% | 108 / 25, 10.4% | **24** | 333 |
+| Workstation non-concurrent | 99.8 | +3.2% (3 rounds) | +5.2% | 95 / 27, 10.8% | 48 | 349 |
+| `GCgen0size=0x4000000` (64 MB) | 95.3 | -1.6% (-0.4, +0.6, -4.9) | -1.8% | **8.4-8.6 / 0 in every run**, 2.8% | 48 | 400 |
+| DATAS off (`GCDynamicAdaptationMode=0`) | 96.7 | -0.1% (+1.5, +3.5, -5.2) | -0.4% | 12.6-13.1 / 3, 3.4-3.7% | 44 | 390 |
+
+Finding: **Server GC is bimodal here.** In 3 of 12 base/pool runs it settled into a ~4x higher gen0 GC rate (34 vs 8
+per 100k requests, gen1 13 vs 0, pause 5% vs 2.3%), and those are the slow runs: base r3 100.5 vs 94-96, pool8 r2
+98.0, pool32 r3 101.3 (~+4-5%). This is part of the run-to-run noise in every round above. `GCgen0size` (64 MB) never
+entered the bad mode (its -4.9% pair is the round where base did); DATAS off is stable but at 13 gen0 + 3 gen1. Pool 8
+/ 32 and Workstation GC: discarded (Workstation trades +3-6% CPU for a better p99; the grader weights CPU-bound
+capacity, so no). gen0size is the only candidate: confirming in o2 (64 MB and 32 MB, counters on), it would be one
+start.sh line, +27 MB RSS.
+
+### My own ideas (after batch 2), 31 Oct
+
+Round o1: 4 arms x 4 interleaved rounds, base 95.5 us/req (no counters):
+
+- **`TC_CallCountThreshold=0x3E8` third time**: 96.1, +0.6% (+2.8, -0.5, -3.1, +3.5). Over all 11 pairs (j1, c1, o1)
+  the mean is -1.1%, and ~0 in the last two rounds: j1's -3.6% was noise (likely the bimodal GC, b1). **Discarded.**
+- **`GCRetainVM=1`** (keep freed segments instead of returning them to the OS): 94.5, -1.0% (+1.8, -1.2, -1.5, -3.2),
+  kcycles -2.0%, same RSS. At the bottom of the one-liner bar and inside the noise. **Not kept** (worth one Synteq A/B
+  only if someone is running one anyway).
+- **Kestrel `AddServerHeader <- false`** (nosrv, +1 line, 16 bytes less per response): 95.8, +0.4% (+5.2, -1.1,
+  -3.2, +0.7). 42/42 both orders, gzip ok. **Discarded.**
+
+Lab fix: conformance.sh waited for the ports only before the first port order, so the second `test/run.sh` could
+start while the first server was still exiting ("address already in use" on 3000/3100, seen twice on nosrv; the
+rerun passed 42/42 + gzip). The wait now runs before each order.

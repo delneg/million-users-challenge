@@ -26,3 +26,12 @@
 {"n": 26, "id": "L26", "what": "own-assembly ReadyToRun confirm (c1)", "loc": "1 fsproj", "box": "opt-box local NOT official", "reps": 4, "base_us": 96.1, "exp_us": 95.2, "delta": "-0.9% (j2 -3.8% not confirmed)", "verdict": "discarded"}
 {"n": 27, "id": "L27", "what": "R2R + cct 1000 (c1)", "loc": "2", "box": "opt-box local NOT official", "reps": 4, "base_us": 96.1, "exp_us": 97.0, "delta": "+1.0%", "verdict": "discarded"}
 {"n": 28, "id": "L28", "what": "composite R2R self-contained (c1)", "loc": "3 fsproj", "box": "opt-box local NOT official", "reps": 4, "base_us": 96.1, "exp_us": 96.1, "delta": "+0.1%, +13 MB RSS", "verdict": "discarded"}
+{"n": 29, "id": "B1a", "what": "DB_POOL=8 (default 16 on 2 CPUs)", "loc": "env", "box": "opt-box local NOT official", "reps": 4, "base_us": 96.2, "exp_us": 96.4, "delta": "+0.3%", "verdict": "discarded"}
+{"n": 30, "id": "B1b", "what": "DB_POOL=32", "loc": "env", "box": "opt-box local NOT official", "reps": 4, "base_us": 96.2, "exp_us": 97.7, "delta": "+1.6%", "verdict": "discarded"}
+{"n": 31, "id": "B1c", "what": "Workstation GC", "loc": "env", "box": "opt-box local NOT official", "reps": 4, "base_us": 96.2, "exp_us": 99.4, "delta": "+3.4% (p99 24 vs 41 ms)", "verdict": "discarded"}
+{"n": 32, "id": "B1d", "what": "Workstation non-concurrent GC", "loc": "env", "box": "opt-box local NOT official", "reps": 3, "base_us": 96.2, "exp_us": 99.8, "delta": "+3.2%", "verdict": "discarded"}
+{"n": 33, "id": "B1e", "what": "GCgen0size=0x4000000", "loc": "1 start.sh line", "box": "opt-box local NOT official", "reps": 3, "base_us": 96.2, "exp_us": 95.3, "delta": "-1.6%; never in the bad GC mode", "verdict": "candidate, o2 confirms"}
+{"n": 34, "id": "B1f", "what": "DATAS off (GCDynamicAdaptationMode=0)", "loc": "env", "box": "opt-box local NOT official", "reps": 3, "base_us": 96.2, "exp_us": 96.7, "delta": "-0.1%", "verdict": "discarded"}
+{"n": 35, "id": "O1a", "what": "TC_CallCountThreshold=0x3E8 third round (o1)", "loc": "1", "box": "opt-box local NOT official", "reps": 4, "base_us": 95.5, "exp_us": 96.1, "delta": "+0.6% (11 pairs overall -1.1%)", "verdict": "discarded"}
+{"n": 36, "id": "O1b", "what": "GCRetainVM=1", "loc": "1 start.sh line", "box": "opt-box local NOT official", "reps": 4, "base_us": 95.5, "exp_us": 94.5, "delta": "-1.0%, kcycles -2.0%", "verdict": "not kept (noise level)"}
+{"n": 37, "id": "O1c", "what": "Kestrel AddServerHeader=false", "loc": "+1", "box": "opt-box local NOT official", "reps": 4, "base_us": 95.5, "exp_us": 95.8, "delta": "+0.4%", "verdict": "discarded"}
