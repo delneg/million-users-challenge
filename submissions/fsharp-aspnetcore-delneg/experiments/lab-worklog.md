@@ -98,8 +98,23 @@ With 1 + 2 (aot2): **42/42 on both port orders, gzip bodies equal the plain ones
 - **L3 AOT `OptimizationPreference=Speed` + `IlcInstructionSet=native`** (aot3; `native` is safe because build.sh
   runs on the scoring box): 111.2 us/req, +15.1% vs base, same as aot2 (noise). No gain.
 
-AOT so far: discarded on CPU (+15%). Next: static PGO for AOT (the framework's own `StandardOptimizationData.mibc`
-from the runtime pack, and a `.mibc` traced from our app under load with `dotnet-pgo`), round a2.
+Round a2 repeated aot3 vs base: +11.1% (+6.9, +15.4, +11.1).
+
+- **L21 AOT + static PGO from the framework's own profile**: the runtime pack ships
+  `microsoft.netcore.app.runtime.linux-x64/.../tools/StandardOptimizationData.mibc`; `IlcPgoOptimize` looks for
+  `mibc/` in the ILCompiler pack (absent), so it is passed as a `<MibcFile Include="$(NuGetPackageRoot)/...">` item
+  (aot4; 1 fsproj line, no code). Round a2b (2 of 3 rounds at the time of writing): aot3 111.6, aot4 107.1 us/req, i.e.
+  **-4% vs plain AOT, still +11.8% vs JIT** (+14.3, +9.3). 42/42.
+- **L22 AOT + a `.mibc` traced from our own app** (`lab-scripts/pgo-trace.sh`: the JIT build of the same source
+  under the screen load, `DOTNET_ReadyToRun=0`, `dotnet-trace` with `0x1E000080018:5`, then `0x1F000080018:5`;
+  `dotnet-pgo` 11.0.0-preview.6 from the dotnet-eng feed, it is not on nuget.org). Both traces gave 11.8k methods
+  and **"Methods with any profile data: 0"** (no block counts, no class histograms): the binary came out
+  byte-identical to aot4. Time-boxed here: even a working own profile would be a committed binary `.mibc`, and the
+  framework profile closes only a third of the gap.
+
+**AOT verdict: discarded for CPU.** It works (42/42), it halves startup (0.35-0.39 s vs 0.65-0.76) and saves ~45 MB
+fixed RSS, but costs +10-15% CPU per request on every round, because Dynamic PGO (worth ~11% here, j1) has no AOT
+equivalent and static PGO recovers ~4%. Per idle connection the memory is the same (~15.5 KB).
 
 ### JIT / PGO knobs (batch 1, item 2), 31 Oct
 

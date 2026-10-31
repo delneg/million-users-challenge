@@ -10,6 +10,7 @@ if [ -n "${PREBUILT:-}" ]; then rsync -a "$SRC/out/" "$S/out/"; printf '#!/usr/b
 export PATH=$L/dotnet:$PATH DOTNET_ROOT=$L/dotnet NUGET_PACKAGES=$L/nuget PGHOST=127.0.0.1 PGUSER=postgres PGPASSWORD=postgres
 for kv in "$@"; do export "$kv"; done
 cd "$R"
+for i in $(seq 60); do ss -ltn | grep -q -E ":(3000|3001|3100) " || break; sleep 0.5; done   # a previous check's server may still be exiting
 for ports in "3000 3001" "3001 3000"; do
   set -- $ports
   PORT=$1 EXTRA_PORT=$2 bash test/run.sh submissions/fsharp-aspnetcore-delneg-conf 2>&1 | grep -E "FAIL|want|got|passed=|rror|healthy|xception" | head -20

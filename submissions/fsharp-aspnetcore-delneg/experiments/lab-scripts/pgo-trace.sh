@@ -9,7 +9,7 @@ export PGHOST=127.0.0.1 PGUSER=postgres PGPASSWORD=postgres
 psql -qX -d postgres -c "DROP DATABASE IF EXISTS feed WITH (FORCE)" -c "CREATE DATABASE feed OWNER feed TEMPLATE feed_seed" >/dev/null
 ( cd $B && env DATABASE_URL=postgres://feed:feed@127.0.0.1:5432/feed JWT_SECRET=million-users-challenge HOST=0.0.0.0 PORT=8080 EXTRA_PORT=8081 \
     DOTNET_ReadyToRun=0 DOTNET_GCHeapHardLimitPercent=0x46 DOTNET_ThreadPool_UnfairSemaphoreSpinLimit=0 DOTNET_SYSTEM_NET_SOCKETS_INLINE_COMPLETIONS=1 \
-    timeout -s INT 130 taskset -c 0-1 $L/tools/dotnet-trace collect --providers Microsoft-Windows-DotNETRuntime:0x1E000080018:5 --duration 00:00:01:40 \
+    timeout -s INT 130 taskset -c 0-1 $L/tools/dotnet-trace collect --providers Microsoft-Windows-DotNETRuntime:${PGO_KEYWORDS:-0x1F000080018}:5 --duration 00:00:01:40 \
     -o $T/trace.nettrace -- ./out/Server > $T/trace.log 2>&1 ) &
 for i in $(seq 120); do curl -sf -m 1 http://127.0.0.1:8080/health >/dev/null && break; sleep 0.5; done
 taskset -c 3 $L/bin/mload -target 127.0.0.1 -ports 8080,8081 -users 18000 -ramp 20s -hold 70s -gzip -think-scale 0.25 -tokens $L/tokens.json > $T/mload.log 2>&1
