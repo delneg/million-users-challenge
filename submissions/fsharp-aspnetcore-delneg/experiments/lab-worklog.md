@@ -99,3 +99,65 @@ With 1 + 2 (aot2): **42/42 on both port orders, gzip bodies equal the plain ones
 
 AOT so far: discarded on CPU (+15%). Next: static PGO for AOT (the framework's own `StandardOptimizationData.mibc`
 from the runtime pack, and a `.mibc` traced from our app under load with `dotnet-pgo`), round a2.
+
+### JIT / PGO knobs (batch 1, item 2), 31 Oct
+
+Round j1: 8 arms x 3 interleaved rounds, all on the `80d24c8` build, env only (base 97.2 us/req, 343 kcycles):
+
+| knob | us/req | vs base (pairs) | kcycles | reading |
+|---|---|---|---|---|
+| `TieredPGO=0` | 108.1 | **+11.2%** (+11.5, +8.8, +13.3) | +10.9% | Dynamic PGO is worth ~11% here (7% on Synteq, e16) |
+| `TieredCompilation=0` | 152.5 | **+56.9%** (+57.4, +57.5, +55.7) | +67.7% | everything FullOpts at first call, no PGO, no R2R code use |
+| `ReadyToRun=0` (jit the framework too) | 95.0 | -2.2% (-0.4, -0.7, -5.6) | -3.3% | one pair carries it: noise; startup 1.07 vs 0.76 s |
+| `TC_QuickJitForLoops=0` | 97.2 | +0.0% (-1.0, +2.5, -1.4) | -0.6% | noise |
+| `TC_OnStackReplacement=0` | 95.7 | -1.6% (-0.2, -0.1, -4.4) | -1.8% | noise |
+| **`TC_CallCountThreshold=0x3E8`** (1000; default 30) | 93.7 | **-3.6% (-3.8, -2.1, -5.0)** | -4.8% (all 3 pairs) | same sign in every pair: confirming in c1 |
+| `RuntimeAsync=0` | 95.1 | -2.2% (+1.5, -3.4, -4.7) | -2.8% | mixed signs; MucAspNet measured +2.6% on Synteq (e19): noise |
+
+Round j2 (5 arms x 3; base 97.2): **R2R of our own assembly** (`PublishReadyToRun=true`, FSharp.Core and Npgsql
+precompiled too) 93.4 us/req, -3.8% (pairs -8.1, +3.0, -6.3), kcycles -4.3%: mixed sign, confirming in c1. R2R +
+`TieredPGO=0`: 107.1, +10.2% (R2R code without PGO is as slow as jitted code without PGO). Composite R2R of the
+framework (self-contained): crossgen2 was killed for memory (exit 137) on this 3.9 GB box; retried with
+`--parallelism:1`.
+
+What the JIT did (`JitDisasmSummary`, base, 18k users): 8,616 compilations; of the final Tier1 versions, 461 have
+"Dynamic PGO", 795 "Synthesized PGO" (no usable profile data), 300 "Static PGO" (from the framework's R2R data).
+**Our own hot methods end as "Tier1 with Synthesized PGO"**: `feed`'s state machine `MoveNext`, `send<__Canon>`
+(shared generic), `verifyToken`; `readPost` gets Dynamic PGO. So Dynamic PGO's 11% comes mostly from the framework
+(Kestrel, Npgsql, STJ), and a higher call-count threshold plausibly gives more methods real profiles (checked in
+`jitsum-cct`). Warm-up: the ramp window (0-20 s) costs ~104 us/req vs ~96 steady, and its p99 is ~95-100 ms (vs
+10-40 later): tier-up is done within ~20 s, so no warm-up code is worth adding (grader runs ramp >= 60 s).
+
+### Data structures and libraries (batch 1, item 4), 31 Oct
+
+Candidates were listed and challenged with **consult** (DeepSeek + Gemini, session 1031-124301-138e). Changes to
+the plan from it: `[<ThreadStatic>]` buffers dropped (F# `.cctor` trap, unsafe across awaits), `[<Struct>]` rows
+and `ObjectPool` dropped (expected zero), `RecyclableMemoryStream` kept only as a measured check (it predicted a
+loss), two new arms added: unflushed `BodyWriter` writes and writing JSON straight from the reader. Rejected from
+it: dropping gzip (the brief keeps gzip), Unix sockets to Postgres (Postgres is on another box when scored),
+`ZLibCompressionOptions.WindowBits` (zlib-ng's hash table is fixed at 64K entries, so the memset stays), libdeflate
+(native, against the brief).
+
+Use case -> what was tried (all 42/42 on both port orders, gzip bodies checked) -> result, interleaved x 3:
+
+- **L14 JSON write, unflushed `BodyWriter.Write`** instead of `Body.WriteAsync` (base2, STJ kept; 232 lines, +3):
+  96.8 vs 95.1 us/req, **+1.8%** (+2.2, -1.5, +4.7), user instructions +6.5%. Kestrel's end-of-request flush plus
+  the `IBufferWriter` copy cost more than the flushed write. **Discarded.**
+- **L15 gzip buffer sized up front** (`new MemoryStream(json.Length)` instead of growing; base3, 0 lines): +2.1% in
+  d0 (+3.1, +3.4, -0.3), +2.9% in d2 (+5.9, +0.2, +2.5). Zeroing a 5 KB array beats 4 growth steps of 256 B..4 KB?
+  No: it is one bigger allocation per feed, and it measured worse twice. **Discarded.**
+- **L16 pooled buffers, `Microsoft.IO.RecyclableMemoryStream` 4.0.1**, STJ serializing into it as an
+  `IBufferWriter`, gzip into a second one (base4; 237 lines, +8, +1 package): 94.8 vs 96.1 us/req, **-1.3%** (+0.6,
+  -3.0, -1.4), kcycles -2.9% (+1.4, -5.9, -4.1). Under the 5% bar for 8 lines. **Discarded** (re-measured with
+  counters below if time allows).
+- **L17 routing by F# match** on method + path segments in one `app.Run`, instead of endpoint routing (routeB; 232
+  lines, +3): 95.4 vs 96.1, **-0.7%** (-1.1, +0.0, -1.0). Endpoint routing is not where the time goes.
+  **Discarded** (it reads well, but it drops routing's trailing-slash/405 behaviour for nothing).
+- On the `Utf8JsonWriter` source (json1, control): **L18 unflushed write** (json2) +3.6% (-0.8, +5.6, +6.0) — same
+  as L14; **L19 JSON straight from the reader** (json3: no `Post` record, no list) +0.7% (-0.7, -2.3, +5.0);
+  **L20 `SkipValidation` + `UnsafeRelaxedJsonEscaping`** (json4) +1.2% (+2.0, -0.6, +2.2). None helps; the
+  hand-written writer path stays behind STJ (L1).
+- Not measured (built, superseded by the base-derived arms): route1/pool1 on json2, fmt1 (`DateTime.TryFormat("O")`
+  into UTF-8, cut to ms, +6 lines: would need >= 5% for its lines, and DateTime formatting is ~1% of busy cycles).
+- Arenas: .NET has no maintained arena allocator for managed objects; gen0 is the bump allocator, so the GC knobs
+  (batch 2) are the arena experiment.
