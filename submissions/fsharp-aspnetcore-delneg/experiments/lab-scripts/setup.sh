@@ -10,6 +10,8 @@ L=~/muclab; R=$L/repo
 sudo sysctl -q -w fs.nr_open=16777216 fs.file-max=33554432 net.ipv4.ip_local_port_range="1024 65535" \
   net.core.somaxconn=65535 net.ipv4.tcp_max_syn_backlog=65535 net.core.netdev_max_backlog=250000 net.ipv4.tcp_tw_reuse=1 \
   net.ipv4.tcp_rmem="4096 16384 4194304" net.ipv4.tcp_wmem="4096 16384 4194304" net.ipv4.tcp_max_orphans=1048576
+# lab only: keep outgoing connections (Postgres, mload) off the ports conformance.sh binds (3000/3001/3100) and 8080-8099
+sudo sysctl -q -w net.ipv4.ip_local_reserved_ports=3000-3001,3100,8080-8099
 command -v psql >/dev/null || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q postgresql-client >/dev/null
 mkdir -p $L/bin
 if ! docker ps --format '{{.Names}}' | grep -qx muclab-pg; then

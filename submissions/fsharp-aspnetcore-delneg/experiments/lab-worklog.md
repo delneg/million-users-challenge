@@ -252,3 +252,20 @@ both port orders, gzip ok). Mechanism unchecked: the slow mode looks like DATAS 
 gen1 GCs, which the good mode has none of), but whether `GCgen0size` turns DATAS off is not verified. Risk: the
 budget is per heap, so on a box with N heaps gen0 can hold up to N x 32 MB between GCs (e.g. 1 GB at 32 heaps,
 inside the 70% hard limit). It needs an A/B on the scoring-class box before PR #67 takes it.
+
+Round k1 (the kept start.sh end to end: `build.sh keep1 ours` from the lab branch vs the `80d24c8` build, 4 rounds,
+counters on, 1 Nov): keep1 97.1 vs 98.9 us/req, **-1.7% (-1.0, -3.4, +2.5, -5.0)**, kcycles -1.8%; base in the slow
+GC mode in r2 and r4 (32.8 and 35.2 gen0 per 100k), which are the -3.4 and -5.0 pairs; keep1 8.4 in all four. Total
+so far: default budget slow in 7 of 19 runs, fixed budget in 0 of 15.
+
+Round o3 (on keep1, 4 rounds, counters on):
+- **`GCgen0size=0x1000000` (16 MB)**: 97.4 vs 97.9, -0.5% (-0.2, +1.2, -1.7, -1.4); 0 of 4 in the slow mode, same GC
+  rate (8.2) and RSS (396 MB) as 32 MB: the knob seems to stop the slow mode rather than set the budget (unchecked).
+  Equivalent; 32 MB stays (measured more).
+- **`GCRetainVM=1` on top**: -0.4% (+0.7, +0.8, -0.6, -2.6). **Discarded.**
+- **RecyclableMemoryStream again (base4 source + the new start.sh)**: 98.4, +0.7% (+0.3, +1.7, +0.1); it does cut
+  allocations 17% (9.2 vs 11.0 KB/request, gen0 7.0 vs 8.2 per 100k), but no CPU. **Discarded** for good.
+
+Lab fix: the conformance port collisions (3000 at the first port order this time) came from the widened ephemeral
+range (1024-65535, from the grader's sysctls): outgoing connections could take 3000/3001/3100 as their local port.
+setup.sh now reserves 3000-3001,3100 next to 8080-8099 (`ip_local_reserved_ports`), applied on the box.
