@@ -35,3 +35,5 @@
 {"n": 35, "id": "O1a", "what": "TC_CallCountThreshold=0x3E8 third round (o1)", "loc": "1", "box": "opt-box local NOT official", "reps": 4, "base_us": 95.5, "exp_us": 96.1, "delta": "+0.6% (11 pairs overall -1.1%)", "verdict": "discarded"}
 {"n": 36, "id": "O1b", "what": "GCRetainVM=1", "loc": "1 start.sh line", "box": "opt-box local NOT official", "reps": 4, "base_us": 95.5, "exp_us": 94.5, "delta": "-1.0%, kcycles -2.0%", "verdict": "not kept (noise level)"}
 {"n": 37, "id": "O1c", "what": "Kestrel AddServerHeader=false", "loc": "+1", "box": "opt-box local NOT official", "reps": 4, "base_us": 95.5, "exp_us": 95.8, "delta": "+0.4%", "verdict": "discarded"}
+{"n": 38, "id": "O2a", "what": "GCgen0size=0x4000000 (o2)", "loc": "1", "box": "opt-box local NOT official", "reps": 4, "base_us": 97.0, "exp_us": 95.0, "delta": "-2.0%, 0/4 slow GC mode vs 2/4 base", "verdict": "superseded by 32 MB"}
+{"n": 39, "id": "O2b", "what": "GCgen0size=0x2000000 (o2)", "loc": "1 start.sh line + comment", "box": "opt-box local NOT official", "reps": 4, "base_us": 97.0, "exp_us": 94.9, "delta": "-2.1%, kcycles -2.6%, +18 MB RSS", "verdict": "kept (42/42)"}

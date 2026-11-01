@@ -235,3 +235,20 @@ Round o1: 4 arms x 4 interleaved rounds, base 95.5 us/req (no counters):
 Lab fix: conformance.sh waited for the ports only before the first port order, so the second `test/run.sh` could
 start while the first server was still exiting ("address already in use" on 3000/3100, seen twice on nosrv; the
 rerun passed 42/42 + gzip). The wait now runs before each order.
+
+Round o2 (gen0size confirmation, 3 arms x 4 interleaved rounds, `COUNTERS=1`, base 97.0 us/req):
+
+| arm | us/req | vs base (pairs) | kcycles | gen0 GCs per 100k req (per run) | idle RSS |
+|---|---|---|---|---|---|
+| base | 97.0 | | 342 | **33.5**, 8.2, **30.3**, 8.9 | 374 MB |
+| `GCgen0size=0x4000000` (64 MB) | 95.0 | -2.0% (-4.1, -1.8, -3.8, +1.7) | -2.5% | 8.4, 8.8, 8.6, 8.6 | 400 |
+| `GCgen0size=0x2000000` (32 MB) | 94.9 | **-2.1% (-5.4, +0.4, -3.8, +0.3)** | -2.6% | 8.2, 8.4, 8.4, 8.4 | 392 |
+
+Over b1 + o2, Server GC with its default budget was in the slow mode in 5 of 15 runs (base and pool arms), with a
+fixed gen0 budget in 0 of 11. The runs the base spends in the good mode cost the same or ~+0.5% with the knob
+(pause 2.7% vs 2.3%), and the slow-mode runs cost +4-5%, so the gain is an expected value, larger the more often the
+default lands in the slow mode. **Kept: `DOTNET_GCgen0size=0x2000000` in start.sh** (1 line + 1 comment; 42/42 on
+both port orders, gzip ok). Mechanism unchecked: the slow mode looks like DATAS shrinking the gen0 budget (it has
+gen1 GCs, which the good mode has none of), but whether `GCgen0size` turns DATAS off is not verified. Risk: the
+budget is per heap, so on a box with N heaps gen0 can hold up to N x 32 MB between GCs (e.g. 1 GB at 32 heaps,
+inside the 70% hard limit). It needs an A/B on the scoring-class box before PR #67 takes it.

@@ -11,4 +11,6 @@ export DOTNET_GCHeapHardLimitPercent="${DOTNET_GCHeapHardLimitPercent:-0x46}"
 export DOTNET_ThreadPool_UnfairSemaphoreSpinLimit="${DOTNET_ThreadPool_UnfairSemaphoreSpinLimit:-0}"
 # Socket completions run on the epoll threads, and Kestrel runs requests there too (worklog e7).
 export DOTNET_SYSTEM_NET_SOCKETS_INLINE_COMPLETIONS="${DOTNET_SYSTEM_NET_SOCKETS_INLINE_COMPLETIONS:-1}"
+# A fixed 32 MB gen0 budget: without it Server GC sometimes settled at ~4x the gen0 GCs (+4-5% CPU per request).
+export DOTNET_GCgen0size="${DOTNET_GCgen0size:-0x2000000}"
 exec "$HERE/out/Server"
