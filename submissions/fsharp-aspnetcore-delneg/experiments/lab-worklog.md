@@ -269,3 +269,22 @@ Round o3 (on keep1, 4 rounds, counters on):
 Lab fix: the conformance port collisions (3000 at the first port order this time) came from the widened ephemeral
 range (1024-65535, from the grader's sysctls): outgoing connections could take 3000/3001/3100 as their local port.
 setup.sh now reserves 3000-3001,3100 next to 8080-8099 (`ip_local_reserved_ports`), applied on the box.
+
+Rounds o4/o5 (1 Nov), the socket engine count. Checked first that the knob is real: thread names in
+`/proc/<pid>/task/*/comm` show 2 `.NET Sockets` threads by default on the 2 server CPUs (one per core with inline
+completions), 1 with `DOTNET_SYSTEM_NET_SOCKETS_THREAD_COUNT=1`, 2 with `=2`.
+
+- **o4, 18k users, 4 rounds vs keep1**: 91.3 vs 96.1 us/req, **-5.0% (-5.3, -5.8, -4.6, -4.1)**, kcycles -4.6%, every
+  pair; p95/p99 10.1/47.9 vs 10.8/50.2 ms.
+- **o5, 30k users (11.7k req/s), 2 rounds**: 77.7 vs 81.2 us/req, -4.3% (-4.7, -3.9); p95 72 vs 75 ms, p99 118 vs 118,
+  err 0. Both arms' p95 rise together at this load (Postgres on its one CPU is near ~0.75 core), so this box
+  saturates on Postgres before the server needs more than one core.
+- **Not kept, despite passing the bar**: with inline completions + `UnsafePreferInlineScheduling` our request code
+  runs on these socket threads, so one engine means one thread runs every request. Here that thread does ~0.9 core
+  of work at the highest load the box can drive; on the scoring box it would cap the server at one core long before
+  its capacity. The win is real per request (fewer cross-engine wakeups is the likely cause, unchecked), so the thing
+  to test where it matters is fewer engines than cores, e.g. `DOTNET_SYSTEM_NET_SOCKETS_THREAD_COUNT=$(( $(nproc) / 2 ))`
+  (2 start.sh lines), at the grader's ramp to saturation. It can't be tested on a 4-CPU box.
+
+Simplify pass (end): Program.fs is unchanged from `80d24c8` (229 lines); the one kept change is 2 lines in start.sh
+(the export and its comment). Nothing to simplify.
