@@ -367,8 +367,8 @@ wait on the same question); "if not, the same changes can go to #35's folder as 
 place." Denis: do that, with #103's head (f24c826). Branch `fsharp-kestrel-uring-raw` off upstream/main: f24c826's
 files copied into `submissions/fsharp-kestrel-uring-delneg/` (README reworded for the folder, one code comment;
 `experiments/` left as it was). 42/42 there with THREADS=4, 8, 16 and LEGACY_BUFS=1. PR #105:
-https://github.com/arjaythedev/million-users-challenge/pull/105 (head efd0f92). #103 left open (its body now points
-to #105 being the same code). (Denis first asked for a new PR without any mention of where the code came from;
+https://github.com/arjaythedev/million-users-challenge/pull/105 (head efd0f92). #103 left open (#105's body says it is the same code
+as #103's head and that #103 can be closed). (Denis first asked for a new PR without any mention of where the code came from;
 declined: it would have looked like dodging the question on #103.)
 
 V1 (1% loss on the Postgres link, 3 reps): >200 ms v11 0.145/0.115/0.101%, v16 (hedging + 96x32 at depth 64)
