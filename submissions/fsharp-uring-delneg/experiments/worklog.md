@@ -499,3 +499,17 @@ The collapse came at ~42k req/s with ~1.33M connections, CPU under 50%: a stall,
 16.7k req/s (K=60). New screen `h1mk`: 1M connections at K=26 s (~38k req/s, the 4-core regime), 0.5% loss on all
 links; queued: #35's merged code (m35) vs the #105 head (v22) vs v22 with #35's defaults
 (64+32, depth 128, NBUFS 8192, GZIP_TRAIN 0), 2 rounds.
+
+## G / G2 (8 Nov 21:45-22:15 UTC): trying to reproduce the grader's 4-core collapse
+
+- `h1mk`, 1M connections at K=26 (~38k req/s), 4 server vCPU, 0.5% loss: v22 collapsed during the ramp (p50 up to
+  5-6 s, RSS 3.4 GB), but the rig's Postgres was saturated (2.91 of its 3 cores): a rig limit (the grader's
+  Postgres box ran at 24-32%).
+- `h2g`, 2 server threads, 660k connections (~330k per thread, as 1.33M on 4), K=26 (~12.7k req/s per thread),
+  Postgres on 3 CPUs (2.2 cores used), connection totals halved to keep the 4-core per-thread layout: v22 steady
+  (p99 27-33 ms, RSS 267 MB) until t=390, then Postgres fell behind (in flight per thread 150 -> 11.7k -> 70k in
+  30 s), p99 7.2 s, RSS 2.5 GB, recovered at t=530. No Postgres log event at that time. #35's merged code (m35, its
+  own defaults) stalled the same way (p50 3 s at t=330, recovered by t=350). Both stall, so this screen does not
+  separate the code that held 1.34M on the grader from the code that held 1.24M.
+- Next: the same at K=34 (~9.7k req/s per thread, the grader's failing step per thread): v22, m35 and v22 with all
+  of #35's network defaults (64+32 at depth 128, NBUFS 8192, GZIP_TRAIN 0, QUICKACK_OFF 0, THIN_LTO 0, PG_THIN 0).
