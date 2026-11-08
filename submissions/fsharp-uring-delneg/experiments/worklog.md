@@ -425,3 +425,14 @@ v19: p99 27.4 ms (worst 65.4), p99.9 262.9, fail 0, timeouts 0, RSS 349 MB. Same
 CI on #105 (873e5ad) failed: `io_uring_setup: errno 12` (ENOMEM) with SQ/CQ 16384/65536 on the GitHub runner,
 probably because its kernel counts ring memory against a small RLIMIT_MEMLOCK. The ring size change had no
 measured gain, so it is reverted to 4096/32768 (5a80ca3); CI green again.
+
+## Y6 (8 Nov 15:24-16:20 UTC): probe Sync, 6 more pairs
+
+1% PG loss, >200 ms, r4-r9: v19 0.097 / 0.119 / 0.109 / 0.126 / 0.111 / 0.088%, v20 0.129 / 0.111 / 0.087 / 0.098 /
+0.108 / 0.103%. Over all 9 pairs: v20 mean 0.108%, v19 0.115% (-6%): noise. v20 1M hold (0.5% loss everywhere):
+p99 23.0 ms, worst 10 s 32.6, fail 0. The probe is not shipped. Two more v19 reps under PG loss: 0.089 / 0.116%;
+under 0.5% loss on all links: 1.029 / 1.025% (the client-path floor: one lost request or lone response segment
+waits for a >= 200 ms timer on either side).
+
+C# #1 on the same screens did not start: its build needs the .NET 10 runtime, which is no longer on the box (only
+11). Not reinstalled; calibrations 1-2 already compare it on CPU and segments.
