@@ -371,3 +371,19 @@ as #103's head and that #103 can be closed).
 V1 (1% loss on the Postgres link, 3 reps): >200 ms v11 0.145/0.115/0.101%, v16 (hedging + 96x32 at depth 64)
 0.019/0.119/0.021%, v16 without hedging 0.130/0.172/0.139%; segments 4.19 / 4.13 / 4.13; PG kcycles 236-267 /
 213-222 / 210-223.
+
+## P1 (8 Nov 08:30-09:00 UTC): Flush probe without hedging, 1% loss on the Postgres link, 3 reps
+
+`PG_PROBE_MS=20`: a connection that owes answers and has received nothing for 20 ms gets one Flush message ('H': no
+reply, no query), so a lost last segment of ours is followed by an out-of-order one and repaired by SACK.
+
+| | >200 ms | p99.9 ms | p95 ms | segments | PG kcycles/req |
+|---|---|---|---|---|---|
+| v11 (PR head, 192+64, depth 32) | 0.090 / 0.429 / 0.102% | 169 / 307 / 206 | 19.8 / 20.2 / - | 4.19-4.22 | 236-239 |
+| probe, 192+64, depth 32 | 0.109 / 0.113 / 0.102% | 219 / 214 / 206 | 19.8 / 19.5 / - | 4.19 | 234-238 |
+| probe, 96+32, depth 64 | 0.152 / 0.110 / 0.201% | 228 / 212 / 232 | 21.7 / 26.2 / 24.0 | 4.13 | 222-250 |
+
+The probe is neutral on the PR layout and does not bring the deep pipeline's loss tail back (a lost Postgres reply
+segment is the common case, and a probe from our side cannot speed its repair). Without hedging the deep pipeline
+stays off. Next: v19 = PR head + the review fixes only (connector retries on a timer, Postgres errors logged once a
+second, header trim, ring 16384/65536), checked for 42/42, reconnect and a no-loss / PG-loss A/B against v11.
