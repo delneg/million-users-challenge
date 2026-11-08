@@ -387,3 +387,18 @@ The probe is neutral on the PR layout and does not bring the deep pipeline's los
 segment is the common case, and a probe from our side cannot speed its repair). Without hedging the deep pipeline
 stays off. Next: v19 = PR head + the review fixes only (connector retries on a timer, Postgres errors logged once a
 second, header trim, ring 16384/65536), checked for 42/42, reconnect and a no-loss / PG-loss A/B against v11.
+
+## v20 (8 Nov 09:37-09:55 UTC): probe Sync, and where the timeouts come from
+
+v20 = v19 + a Sync (no SQL) on a Postgres connection that owes answers and has received nothing for 20 ms. 42/42
+with THREADS=4, 8, LEGACY_BUFS=1 and PG_PROBE_MS=1; reconnect 4 s.
+
+1% loss on the Postgres link, 3 reps: >200 ms v20 0.124 / 0.112 / 0.098% (mean 0.111), v19 0.108 / 0.149 / 0.127%
+(mean 0.128): within noise. TCP timeouts unchanged (0.03-0.05 per 1k requests); ~2 probes per 5 s per thread.
+
+TCP counters over one v19 run (Z2): TCPTimeouts ~70 (TcpTimeoutRehash 72), TCPSackRecoveryFail 63,
+TCPLostRetransmit 201, TCPSackRecovery 6,055, TCPFastRetrans 19,118, TCPLossProbeRecovery 678. Most timeouts are a
+retransmission lost again during SACK recovery: the sender's congestion window is full, so no new data follows to
+reveal the second loss, and a probe's answer can't go out either. Each such timeout stalls the ~30 queries in
+flight on that connection, which is the >200 ms share. Next: shallower pipelines (PG_DEPTH 16, 8) with and without
+the probe, which covers the lone-segment tail losses short flights make.
