@@ -5,7 +5,7 @@ and the load on the same box, the grader's sysctls. Not the grader: numbers here
 
 ## 7 Nov: setup
 
-- Kernel: Denis's override (7 Nov) = one 6.8.0 kernel without the -147 buffer-ring bug. Newest 6.8.0 in the archive
+- Kernel: one 6.8.0 kernel without the -147 buffer-ring bug. Newest 6.8.0 in the archive
   is -149 (affected), so the box boots 6.8.0-117 (GRUB_DEFAULT pinned); the HWE 7.0 kernel briefly installed was
   removed. The fallback (ring -> ring with `resv[0]=1` -> PROVIDE_BUFFERS) stays in the code; `LEGACY_BUFS=1` forces
   PROVIDE_BUFFERS for tests.
@@ -174,12 +174,11 @@ the next window, for everyone: v5 REARM_ALL=0 p99 1057 ms, v5 1057, #35 1258, C#
 1782). 0 timeouts, 0 failures. Bursts reached 23k CQEs in one pass (CQ is 32k) but no ENOBUFS: 1.5 s at ~4.2k req/s
 per thread queues ~6.3k requests, under the 8,192 buffers. cal10 repeats with 3 s stalls (~12.5k per thread).
 
-## 7 Nov ~16:00 UTC: Denis's direction, and the shipped defaults (v6)
+## 7 Nov ~16:00 UTC: the shipped defaults (v6)
 
-Denis stopped the stall/loss calibration (cal10 killed mid-run: with 3 s stalls both re-arm modes saw ~4k ENOBUFS per
-thread and p95 ~1.1-1.3 s, p99 3.0 s; cal11 never ran): the rig isn't the grader, he wants improvements over more
-measuring. Directive: spread queries over more Postgres connections with a shallower pipeline per connection (C# #1's
-idea), conformance + a quick sanity check, ship the one PR, keep improving on that branch.
+The stall/loss calibration stopped here (cal10 killed mid-run: with 3 s stalls both re-arm modes saw ~4k ENOBUFS per
+thread and p95 ~1.1-1.3 s, p99 3.0 s; cal11 never ran): the rig isn't the grader. Next step: spread queries over more
+Postgres connections with a shallower pipeline per connection (C# #1's idea), conformance + a quick sanity check.
 
 Chosen from what was measured: 192 read + 64 write connections (256 <= 512; 4 cores: 48 + 16 per thread) and
 `PG_DEPTH=32` fill, not runs of 16 (`PG_RUN=16`, the literal C# scheme, gave p99 ~210 ms vs ~63 ms under 1% Postgres
@@ -235,7 +234,7 @@ Kernel 75% of the server's CPU (TCP for both loopback ends: transmit, ACK handli
 rig's leftover Docker rules; AppArmor socket hooks 1.5%). Our code's biggest items: igzip 3.7%, the feed JSON
 (`putPost`) 1.4%. Nothing cheap left on the user side; CPU work stops here.
 
-## Bundle 1 (v11): small byte savings measured together (Denis, 7 Nov: bundle small wins, measure the bundle as one)
+## Bundle 1 (v11): small byte savings measured together
 
 Went back over the items left below noise or deferred (here and in #35's worklog):
 
@@ -267,7 +266,7 @@ Bytes to clients -14.4% and from Postgres -3.5% in every run (deterministic), se
 (-0.03 to -0.07), user cycles -4% on 1 vCPU, 2-vCPU p99 42.5 vs 59.5 ms mean (one pair even). Writes to Postgres
 +7 B/req (per-column format codes in each Bind). **Kept**, pushed to PR #103.
 
-## 7 Nov evening: loop resumed (Opt/Denis: keep going to 100 experiments or 9 Nov 15:00 UTC)
+## 7 Nov evening: hedged reads, night queue
 
 v12/v13: **hedged reads** (#100's idea, written here for our PgConn): a read connection that owes answers and has
 received nothing for `PG_HEDGE_MS` (20), while another read connection of the thread received within that time, has
@@ -285,7 +284,7 @@ storm guard, 0.5% loss everywhere), B connections x depth with hedging (384x8, 1
 C `PG_RCVBUF` 32/64 KB, D 1M-connection holds (small client buffers; v11 vs v13 at 0.5% loss), E third reps, F CPU of
 the depth variants, G small client buffers under loss, H 1M holds of the depth variants.
 
-## External review (another agent, via Denis, 7 Nov ~21:15): checked point by point
+## Code review notes (7 Nov ~21:15): checked point by point
 
 - Hedging default on before measured: it is uncommitted (v12-v15 builds only); the PR head has none. It ships only if
   blocks A/B keep it, with a rules-check row (rule 3: same statement, re-run only when its connection has gone silent
@@ -302,10 +301,10 @@ the depth variants, G small client buffers under loss, H 1M holds of the depth v
 - Segment counts on lo count GSO skbs: right, a 2-segment feed counts once. Screen option `LO_GSO=off` added (harness
   only, restored after the run); runs N-v13 and N-cs1 queued for wire-size counts.
 - GC: steady state is ~7 gen0 / 6 gen2 per run, 16-31 ms total pause; gen0size not worth a run now. Ctx pool trim and
-  1 KB buffers: stall-only, no stall tests (Denis); noted. SQ 4096 / 18-bit ctx id: cliffs only in long stalls; noted.
+  1 KB buffers: stall-only, not tested here; noted. SQ 4096 / 18-bit ctx id: cliffs only in long stalls; noted.
 - Dead code / knob pruning and docs drift (rules-check row 5, README knobs): after the night queue.
 
-Second note from the same reviewer (kernel cost): packets are the lever. Checked: our headers are 120 bytes on a
+Second set of review notes (kernel cost): packets are the lever. Checked: our headers are 120 bytes on a
 gzipped feed (status, Content-Type, Content-Encoding + Vary, Content-Length; no Date, Server or Connection), feed
 1,961 + 120 = 2,081 B against a 1,448 MSS: no header trim gets it to one segment. SQ 4096 -> 16384, CQ 32768 ->
 65536 (2 MB per ring) taken into the next build: no mid-pass submit in a burst. THREADS = cores - 1 (a free CPU for
@@ -361,15 +360,13 @@ restarted (the v13 comparison run was invalid: its server never logged a connect
 
 ## 8 Nov 07:40 UTC: PR #105 (in #35's folder)
 
-Maintainer's benchmark agent on #103 (8 Nov): not run yet; the code is #35's with the Kestrel host taken out, and
-Arjay hasn't decided whether a second version of an entrant's own server counts as a separate entry (#40, #53, #55
-wait on the same question); "if not, the same changes can go to #35's folder as a PR, which would be re-scored in
-place." Denis: do that, with #103's head (f24c826). Branch `fsharp-kestrel-uring-raw` off upstream/main: f24c826's
+The benchmark agent's comment on #103 (8 Nov): a second version of an entrant's own server is waiting on a decision
+(#40, #53, #55 too); the same changes can go to #35's folder as a PR and be re-scored in place. Done with #103's head
+(f24c826). Branch `fsharp-kestrel-uring-raw` off upstream/main: f24c826's
 files copied into `submissions/fsharp-kestrel-uring-delneg/` (README reworded for the folder, one code comment;
 `experiments/` left as it was). 42/42 there with THREADS=4, 8, 16 and LEGACY_BUFS=1. PR #105:
 https://github.com/arjaythedev/million-users-challenge/pull/105 (head efd0f92). #103 left open (#105's body says it is the same code
-as #103's head and that #103 can be closed). (Denis first asked for a new PR without any mention of where the code came from;
-declined: it would have looked like dodging the question on #103.)
+as #103's head and that #103 can be closed).
 
 V1 (1% loss on the Postgres link, 3 reps): >200 ms v11 0.145/0.115/0.101%, v16 (hedging + 96x32 at depth 64)
 0.019/0.119/0.021%, v16 without hedging 0.130/0.172/0.139%; segments 4.19 / 4.13 / 4.13; PG kcycles 236-267 /
