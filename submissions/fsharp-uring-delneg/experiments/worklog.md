@@ -266,3 +266,95 @@ Interleaved v9 (PR head) / v11, screen3, 100k idle connections:
 Bytes to clients -14.4% and from Postgres -3.5% in every run (deterministic), segments lower in all 5 pairs
 (-0.03 to -0.07), user cycles -4% on 1 vCPU, 2-vCPU p99 42.5 vs 59.5 ms mean (one pair even). Writes to Postgres
 +7 B/req (per-column format codes in each Bind). **Kept**, pushed to PR #103.
+
+## 7 Nov evening: loop resumed (Opt/Denis: keep going to 100 experiments or 9 Nov 15:00 UTC)
+
+v12/v13: **hedged reads** (#100's idea, written here for our PgConn): a read connection that owes answers and has
+received nothing for `PG_HEDGE_MS` (20), while another read connection of the thread received within that time, has
+its owed reads sent again on another read connection (`Fill`, at most 3 sends per request, shared with the lost-
+connection re-route); their places in the stalled connection's queue go to a shared `sink` query that drops the late
+answers; the stalled connection gets no new queries until it receives again. Writes are never hedged. A thread that
+owes reads waits at most PG_HEDGE_MS/2 in `io_uring_enter`. Stress check v12 with `PG_HEDGE_MS=1` (hedge on nearly
+every pass): 42/42 on 4/8 threads and LEGACY_BUFS=1, JSON identical to v11, 0 errors under load, but a storm
+(Postgres cycles/req 644 vs 225, p99 5.4 s): so v13 adds a storm guard, each read earns 2% of a hedge
+(`PG_HEDGE_PCT`), at most 256 saved. Also `PG_RCVBUF` (fixed receive buffer on Postgres sockets) for the queue.
+
+Night queue on the box: `/opt/muc/q/runner.sh` pops `/opt/muc/q/queue.txt` (helpers `/opt/muc/q/lib.sh`), results in
+`/opt/muc/q/results.log`, state in `/opt/muc/q/state`. Blocks: A hedging vs v11 (PG 1% loss, no loss, 1 vCPU CPU,
+storm guard, 0.5% loss everywhere), B connections x depth with hedging (384x8, 192x16, 96x64, 192x128, base 192x32),
+C `PG_RCVBUF` 32/64 KB, D 1M-connection holds (small client buffers; v11 vs v13 at 0.5% loss), E third reps, F CPU of
+the depth variants, G small client buffers under loss, H 1M holds of the depth variants.
+
+## External review (another agent, via Denis, 7 Nov ~21:15): checked point by point
+
+- Hedging default on before measured: it is uncommitted (v12-v15 builds only); the PR head has none. It ships only if
+  blocks A/B keep it, with a rules-check row (rule 3: same statement, re-run only when its connection has gone silent
+  while others answer; C# #1 #59 re-sends reads of a lost connection, #100 (open) hedges like this).
+- "Spread over 192 connections is mostly nominal": true, `Fill` keeps one or two connections per thread busy; block B
+  (connections x depth) decides; README wording to fix.
+- Reconnect `Thread.Sleep` in the connector: true (4 workers, up to 1 s per retry each). v15: retries wait on a timer
+  (`Task.Delay`), workers only connect. Check queued: `pgre` (Postgres stopped 20 s, time until all 256 are back).
+- Per-query `eprintfn` on failure: true (a lost connection or a Postgres restart printed one line per failed query on
+  the I/O thread). v15: one line per second with a count.
+- Header tab: `Trim(' ').Trim('\t')` left a space after a leading tab; v15 trims both at once.
+- QUICKACK inheritance unrecorded: checked now on 6.8.0-117 with rig/inherit.c: `listener: quickack=0 thin=1`,
+  `accepted: quickack=0 thin=1`. Both inherit.
+- Segment counts on lo count GSO skbs: right, a 2-segment feed counts once. Screen option `LO_GSO=off` added (harness
+  only, restored after the run); runs N-v13 and N-cs1 queued for wire-size counts.
+- GC: steady state is ~7 gen0 / 6 gen2 per run, 16-31 ms total pause; gen0size not worth a run now. Ctx pool trim and
+  1 KB buffers: stall-only, no stall tests (Denis); noted. SQ 4096 / 18-bit ctx id: cliffs only in long stalls; noted.
+- Dead code / knob pruning and docs drift (rules-check row 5, README knobs): after the night queue.
+
+Second note from the same reviewer (kernel cost): packets are the lever. Checked: our headers are 120 bytes on a
+gzipped feed (status, Content-Type, Content-Encoding + Vary, Content-Length; no Date, Server or Connection), feed
+1,961 + 120 = 2,081 B against a 1,448 MSS: no header trim gets it to one segment. SQ 4096 -> 16384, CQ 32768 ->
+65536 (2 MB per ring) taken into the next build: no mid-pass submit in a burst. THREADS = cores - 1 (a free CPU for
+the single-queue NIC's softirq on the grader): untestable on loopback; C# #1 also runs one loop per core; kept here
+as the one untested bet, not shipped. io_uring bundles / incremental buffers need 6.10+: the grader runs 6.8 (Ubuntu
+24.04 family), skipped.
+
+## Night queue results (7 Nov 20:46 - 8 Nov 02:07 UTC), 2 vCPU 30k users unless noted
+
+Tail metric from mload's histogram (`/opt/muc/q/tail.py`: 2400 log bins, bin = floor(100 ln us)): p99.9 and the
+share of requests over 200 ms (the retransmission-timeout tail).
+
+**A. Hedged reads (v13) vs PR head (v11).**
+
+| | v11 PR head | v13 hedging (20 ms, guard 2%) |
+|---|---|---|
+| 1% loss on the Postgres link, 5 reps each: >200 ms | 0.095, 0.084, 0.116, 0.105, 0.128% (mean 0.105) | 0.016, 0.007, 0.012, 0.016, 0.022% (mean 0.015) |
+| same, p99.9 ms | 196, 121, 223, 210, 225 (mean 195) | 96, 125, 92, 91, 102 (mean 101) |
+| no loss, 3 reps: p99.9 / >200 ms | 91 / 0, 134 / 0, 121 / 0 | 121 / 0, 174 / 0.061%, 177 / 0.068% |
+| 1 vCPU, no loss: kcycles/req | 69.1 | 71.6 (64 hedges) |
+| 0.5% loss on every link, 3 reps: p99 | 223, 225, 223 | 165, 225, 181 (>200 ms ~1% both: client-path timeouts) |
+| 1M connections, 4 vCPU, 0.5% loss everywhere, 3 holds: p99 (worst 10 s) | 110 (313), 23 (27), 27 (186) | 46 (156), 27 (156), 23 (78) |
+
+Under Postgres-link loss hedging cuts the >200 ms tail ~7x and p99.9 ~2x. T=40 ms: tail back to 0.075/0.015%;
+T=10 ms: 3.5x the hedges, no better. Storm guard check (`PG_HEDGE_MS=1` with the guard): 8,712 hedges, p99.9 124 ms,
+>200 ms 0.0001%: bounded. No-loss: two of three v13 reps had a small >200 ms tail (0.06%) the v11 reps didn't; the
+B0 runs later in the night were noisy for every config (B0-base-r2 p99 73 ms), so re-measured in V2 (8 Nov).
+
+**S. Two segments per small response (`SPLIT_SEND=1`).** 0.5% loss everywhere: p99 105/135 vs 200/221 ms, but
+>200 ms unchanged (~1%: request losses), segments 6.14 vs 4.20 per request (the client ACKs each pair) and kernel
+cycles +45%. **Discarded** (more packets is the wrong way on the grader).
+
+**B. Connections x depth, with hedging (v13):**
+
+| config | PG loss 1%: p99.9 / >200 ms (2 reps) | no loss p99.9 | segments | PG kcycles/req |
+|---|---|---|---|---|
+| 192+64, depth 32 (base) | 144 / 0.012%, 190 / 0.086% | 73, 142 | 4.19 | 252-264 |
+| 192+64, depth 16 | 70 / 0.010%, 115 / 0.016% | 95, 130 | 4.31 | 245-261 |
+| 384+64, depth 8 | 860 / 0.69%, 625 / 0.51% | 126, 212 | 4.55 | 282-332 |
+| 96+32, depth 64 | 95 / 0.019%, 120 / 0.007% | 87, 126 | 4.13 | 201-226 |
+| 192+64, depth 128 | 127 / 0.030%, 121 / 0.014% | 89, 154 | 4.10 | 204-209 |
+
+With hedging, deep pipelines win: fewer segments (-1.5%), -15-20% Postgres cycles, tails as good or better.
+1M hold, 0.5% loss: depth 128 p99 33 ms (worst 55), 384x8 p99 131 (worst 221). Picked 96+32 at depth 64 for v16.
+
+**C. `PG_RCVBUF` 32/64 KB:** no gain (PG-loss p99.9 126-165 vs base 144-190, no-loss worse). Discarded.
+**D/G. Small client socket buffers (`SO_RCVBUF=4096 SO_SNDBUF=8192`):** 1M hold no-loss p99 16.3 both, kernel TCP
+mem 578 vs 390 pages (no saving); under 0.5% loss unchanged. Discarded.
+**N. GSO/TSO off on lo:** segments 4.178 vs 4.18 with GSO on: the counts were right; on this seed a gzipped feed
+fits one segment (613 B per response on average). The C# run of this block failed to start (not repeated).
+**v15 reconnect:** Postgres stopped 20 s under an idle 4-thread server: all 256 connections back 4 s after it
+restarted (the v13 comparison run was invalid: its server never logged a connect attempt).

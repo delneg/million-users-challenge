@@ -24,6 +24,7 @@ open System.Runtime.InteropServices
 open System.Text
 open System.Text.Json
 open System.Threading
+open System.Threading.Tasks
 open Microsoft.FSharp.NativeInterop
 open Pg
 open Ring
@@ -139,6 +140,17 @@ let private eBodyTooLong = "body must be at most 500 characters"B
 let private eInternal = "internal server error"B
 let private eBadRequest = "bad request"B
 let private eTooLarge = "request too large"B
+
+/// Postgres errors are logged at most once a second per process, with a count (a lost connection fails up to a few
+/// dozen queries at once, all on an I/O thread)
+let private pgErrors = [| 0L; 0L |]
+let private logPgError (route: Route) (err: PgError) =
+    let n = Interlocked.Increment(&pgErrors.[0])
+    let now = Environment.TickCount64
+    let last = Volatile.Read(&pgErrors.[1])
+    if now - last >= 1000L && Interlocked.CompareExchange(&pgErrors.[1], now, last) = last then
+        let k = Interlocked.Exchange(&pgErrors.[0], 0L)
+        Console.Error.WriteLine("postgres errors: " + string (max k n) + " in the last second, e.g. " + string route + ": " + err.ToString())
 
 /// One request: what was asked, the response being built (in a pinned buffer that io_uring sends from) and the
 /// Postgres query it runs. Pooled per thread; the read paths allocate nothing per request.
@@ -338,7 +350,7 @@ type Ctx(id: int, finish: Ctx -> unit) =
             | Route.Health -> c.Unhealthy err.Message
             | Route.Like when err.SqlState = "23503" -> c.Error(404, ReadOnlySpan ePostNotFound)
             | _ ->
-                if c.Route <> Route.Health then eprintfn "postgres error on %O: %O" c.Route err
+                logPgError c.Route err
                 c.Error(500, ReadOnlySpan eInternal)
         finish c
 
@@ -483,10 +495,10 @@ let private BufGroup = 0us
 let private WaitN = uint32 (max 1 (env "WAIT_N" 128))
 let private WaitNs = int64 (env "WAIT_US" 4000) * 1000L
 /// Postgres dispatch: n > 0 = fill connections in order up to n queries in flight (see Fill); 0 = least queries in
-/// flight. #35 filled to 128, so one lost segment could hold up to 128 queries (and everything queued behind them on
-/// that connection) for a retransmission timeout. 32 caps that at a quarter while a busy connection still carries
-/// long flights (32 feed answers are ~30 segments, so a loss mid-flight is still repaired by fast retransmit).
-let private pgDepth = env "PG_DEPTH" 32
+/// flight. Deep flights are repaired by fast retransmit, and with hedged reads (PG_HEDGE_MS) a connection that goes
+/// silent hands its reads on after 20 ms, so one lost segment no longer holds its queries for a retransmission
+/// timeout. 64 with hedging: fewer segments and -15% Postgres cycles per request than 32 (block B, 8 Nov).
+let private pgDepth = env "PG_DEPTH" 64
 /// PG_RUN=r > 0 (overrides PG_DEPTH): each pass deals its queries in runs of r to the least-loaded connection of the
 /// kind (C# #1's scheme). Off: on our rig, under 1% Postgres-path loss, runs of 16 gave p99 ~210 ms against ~63 ms
 /// for filling (short flights end in tail losses that wait for a timeout).
@@ -496,6 +508,15 @@ let private pgRun = env "PG_RUN" 0
 /// short enough to free a stuck connection, long enough that a few-second Postgres hiccup slows requests rather than
 /// failing them; 0: off
 let private pgTimeoutMs = int64 (env "PG_TIMEOUT_MS" 10000)
+/// Hedged reads: a read connection that owes answers and has received nothing for this long, while another read
+/// connection of the thread is receiving (Postgres is answering), has its reads sent again on another read connection
+/// (at most 3 times per request); the late answers are dropped. A lost segment then costs this, not a retransmission
+/// timeout (>= 200 ms) for every query behind it. Writes are never sent twice. 0: off.
+let private pgHedgeMs = int64 (env "PG_HEDGE_MS" 20)
+let private splitSend = env "SPLIT_SEND" 0 = 1
+/// Storm guard: each read a thread sends earns PG_HEDGE_PCT/100 of a hedge (at most 256 saved up), so hedges stay a
+/// small share of reads even when Postgres is slow everywhere
+let private hedgeShare = float (env "PG_HEDGE_PCT" 2) / 100.0
 let private MaxRequest = 64 * 1024
 let private rearmAll = env "REARM_ALL" 1 = 1
 let private legacyForced = Environment.GetEnvironmentVariable "LEGACY_BUFS" = "1"
@@ -512,25 +533,26 @@ type PgArrival(index: int, sock: Socket) =
 [<Sealed>]
 type Connector(url: string, options: string) =
     let q = new BlockingCollection<struct (Mailbox<PgArrival> * int * int)>()
+    // a retry waits on a timer, not in a worker: after an outage every connection is retried within its own delay
+    let add (mb, index, delayMs: int) =
+        if delayMs <= 0 then q.Add(struct (mb, index, delayMs))
+        else Task.Delay(delayMs).ContinueWith(fun (_: Task) -> q.Add(struct (mb, index, delayMs))) |> ignore
     let run () =
         for struct (mb, index, delayMs) in q.GetConsumingEnumerable() do
-            if delayMs > 0 then Thread.Sleep delayMs
             let s =
                 try Pg.connect url options true
                 with e ->
                     eprintfn "postgres connect failed: %s" e.Message
                     null
             if isNull s then
-                let next = if delayMs = 0 then 50 else min 1000 (delayMs * 2)
-                // the next attempt for this one goes behind the others
-                ThreadPool.QueueUserWorkItem(fun _ -> q.Add(struct (mb, index, next))) |> ignore
+                add (mb, index, (if delayMs = 0 then 50 else min 1000 (delayMs * 2)))
             else mb.Post(PgArrival(index, s))
     let threads =
         [| for i in 0 .. 3 ->
                let t = Thread(run, 256 * 1024, IsBackground = true, Name = "pg-connect-" + string i)
                t.Start()
                t |]
-    member _.Request(box: Mailbox<PgArrival>, index: int, delayMs: int) = q.Add(struct (box, index, delayMs))
+    member _.Request(box: Mailbox<PgArrival>, index: int, delayMs: int) = add (box, index, delayMs)
 
 [<Sealed>]
 type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, connector: Connector) as this =
@@ -572,8 +594,23 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
                 q.Retry()
                 this.Requery c
             | _ -> false)
+    // hedging: a read owed by a stalled connection goes to another read connection (none left: it stays and waits)
+    let hedge =
+        Func<PgQuery, bool>(fun q ->
+            match q with
+            | :? Ctx as c when c.Bounces < 3 ->
+                let conn: PgConn = if pgDepth > 0 then this.Fill(0, reads) else this.Least(0, reads)
+                if isNull conn then false
+                else
+                    c.Bounces <- c.Bounces + 1
+                    q.Retry()
+                    conn.Submit c
+            | _ -> false)
     // stats
     let mutable stPasses = 0L
+    let mutable stHedged = 0L
+    let mutable owedReads = false
+    let mutable hedgeTokens = 0.0
     let mutable stCqes = 0L
     let mutable stNoBufs = 0L
     let mutable stReqs = 0L
@@ -703,7 +740,7 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
         let mutable best: PgConn = null
         for i in first .. first + count - 1 do
             let c = pg.[i]
-            if not (isNull c) && not c.Broken && (isNull best || c.Inflight < best.Inflight) then best <- c
+            if not (isNull c) && not c.Broken && not c.Stalled && (isNull best || c.Inflight < best.Inflight) then best <- c
         best
 
     /// PG_DEPTH > 0: the first live connection of the kind with fewer than PG_DEPTH queries in flight (a burst fills
@@ -714,7 +751,7 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
         while isNull pick && k < count do
             let i = first + k
             let c = pg.[i]
-            if not (isNull c) && not c.Broken && c.Inflight < pgDepth then pick <- c
+            if not (isNull c) && not c.Broken && not c.Stalled && c.Inflight < pgDepth then pick <- c
             k <- k + 1
         if isNull pick then this.Least(first, count) else pick
 
@@ -724,6 +761,7 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
         not (isNull conn) && conn.Submit c
 
     member private this.Query(c: Ctx, write: bool) =
+        if not write then hedgeTokens <- min 256.0 (hedgeTokens + hedgeShare)
         let conn =
             if pgRun > 0 then
                 if write then
@@ -743,6 +781,27 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
             else this.Least(0, reads)
         if isNull conn then c.Done(PgError("08006", "no database connection"))
         else conn.Submit c |> ignore
+
+    /// hedged reads (PG_HEDGE_MS): see pgHedgeMs
+    member private _.HedgeReads() =
+        let now = Environment.TickCount64
+        let mutable alive = false
+        let mutable owed = false
+        for i in 0 .. reads - 1 do
+            let c = pg.[i]
+            if not (isNull c) && not c.Broken then
+                if now - c.LastRecv <= pgHedgeMs then alive <- true
+                if c.Inflight > 0 then owed <- true
+        owedReads <- owed
+        if alive && owed then
+            for i in 0 .. reads - 1 do
+                let c = pg.[i]
+                if not (isNull c) && not c.Broken && not c.Stalled && c.Inflight > 0 && now - c.LastProgress > pgHedgeMs then
+                    let lim = int hedgeTokens
+                    if lim > 0 then
+                        let m = c.Hedge(hedge, lim)
+                        hedgeTokens <- hedgeTokens - float m
+                        stHedged <- stHedged + int64 m
 
     member private _.FlushPg() =
         runR <- null
@@ -887,7 +946,7 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
                     let colon = h.IndexOf ':'B
                     if colon > 0 then
                         let name = h.Slice(0, colon)
-                        let value = h.Slice(colon + 1).Trim(' 'B).Trim('\t'B)
+                        let value = h.Slice(colon + 1).Trim(" \t"B)
                         match name.Length with
                         | 14 when isName name hContentLength ->
                             let mutable used = 0
@@ -999,6 +1058,13 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
         if state.[slot] &&& Live = 0uy || gen.[slot] <> c.Gen then this.Return c
         else
             c.Seal(compressor, encoder)
+            // SPLIT_SEND=1: a response that fits one segment leaves as two (two linked sends), so a lost one is
+            // repaired by a loss probe after ~2 RTT (or by the SACK of the other) instead of a 200+ ms timeout
+            if splitSend && c.SendLen >= 64 && c.SendLen <= 1400 then
+                let k = c.SendLen / 2
+                ring.SendHead(slot, Marshal.UnsafeAddrOfPinnedArrayElement(c.SendBuf, c.SendStart), k,
+                              MSG_NOSIGNAL ||| 0x100u, ud OpIgnore slot c.Gen c.Id)
+                c.SentOff <- k
             this.SendRest c
 
     member private _.SendRest(c: Ctx) =
@@ -1039,7 +1105,7 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
         try
             try
                 threadId <- Thread.CurrentThread.ManagedThreadId
-                ring <- Ring(4096u, 32768u)
+                ring <- Ring(16384u, 65536u) // a burst of ~10k completions in one pass still fits one submit
                 // fixed-file table, sparse
                 let reg = Marshal.AllocHGlobal 32
                 NativeMemory.Clear(NativePtr.toVoidPtr (NativePtr.ofNativeInt<byte> reg), unativeint 32)
@@ -1074,6 +1140,7 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
             while true do
                 // an idle thread wakes at least once a second while the Postgres watchdog is on
                 if busy && WaitN > 1u then ring.Enter(WaitN, WaitNs) |> ignore
+                elif owedReads then ring.Enter(1u, pgHedgeMs * 500_000L) |> ignore
                 elif pgTimeoutMs > 0L then ring.Enter(1u, 1_000_000_000L) |> ignore
                 else ring.Enter(1u, 0L) |> ignore
                 cqes.Clear()
@@ -1086,6 +1153,7 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
                 let mutable a: PgArrival = null
                 while mailbox.TryTake(&a) do
                     try this.PgArrived a with e -> eprintfn "%O" e
+                if pgHedgeMs > 0L then this.HedgeReads()
                 this.FlushPg()
                 if pgTimeoutMs > 0L then
                     let now = Environment.TickCount64
@@ -1118,18 +1186,19 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
                     if Environment.TickCount64 - stLast > 5000L then
                         stLast <- Environment.TickCount64
                         let inflight = pg |> Array.sumBy (fun c -> if isNull c then 0 else c.Inflight)
-                        eprintfn "io-%d passes=%d cqes=%d reqs=%d nobufs=%d open=%d ctxs=%d pg=%d inflight=%d gc=%d/%d/%d maxcqes=%d maxpass=%.1fms gcpause=%.0fms rearmq=%d cqdrop=%d"
+                        eprintfn "io-%d passes=%d cqes=%d reqs=%d nobufs=%d open=%d ctxs=%d pg=%d inflight=%d gc=%d/%d/%d maxcqes=%d maxpass=%.1fms gcpause=%.0fms rearmq=%d cqdrop=%d hedged=%d"
                             index stPasses stCqes stReqs stNoBufs openCount ctxs.Count
                             (pg |> Array.sumBy (fun c -> if isNull c then 0 else 1)) inflight
                             (GC.CollectionCount 0) (GC.CollectionCount 1) (GC.CollectionCount 2)
                             stMaxCqes (float stMaxPass * 1000.0 / float Diagnostics.Stopwatch.Frequency)
-                            (GC.GetTotalPauseDuration().TotalMilliseconds) rearm.Count ring.CqOverflow
+                            (GC.GetTotalPauseDuration().TotalMilliseconds) rearm.Count ring.CqOverflow stHedged
                         stMaxCqes <- 0
                         stMaxPass <- 0L
                         stPasses <- 0L
                         stCqes <- 0L
                         stNoBufs <- 0L
                         stReqs <- 0L
+                        stHedged <- 0L
 
 // ---------- listening sockets ----------
 

@@ -252,6 +252,12 @@ let parseError (body: ReadOnlySpan<byte>) =
 
 let private lost = PgError("08006", "connection lost")
 
+/// Takes the place of a read that was sent again on another connection (hedging): its late answer is dropped here.
+let sink =
+    { new PgQuery() with
+        member _.Write _ = ()
+        member _.Done _ = () }
+
 /// FATAL or PANIC ErrorResponse (e.g. 57P01 on shutdown): about the connection, not a query
 let private isFatal (body: ReadOnlySpan<byte>) =
     let mutable body = body
@@ -312,6 +318,10 @@ type PgConn(sock: Socket, index: int, isWrite: bool, requeue: Func<PgQuery, bool
     member val Broken = false with get, set
     /// when this connection last received bytes, or got its first query after being idle (Environment.TickCount64)
     member val LastProgress = 0L with get, set
+    /// when this connection last received bytes
+    member val LastRecv = 0L with get, set
+    /// its reads were sent again elsewhere (hedging): it gets no new queries until it receives again
+    member val Stalled = false with get, set
     member val SendInFlight = false with get, set
     member val Dirty = false with get, set
     member val Busy = 0 with get, set
@@ -381,6 +391,8 @@ type PgConn(sock: Socket, index: int, isWrite: bool, requeue: Func<PgQuery, bool
     /// `n` bytes arrived: handles every complete message. `freed` runs after each completed query.
     member c.Received(n: int, freed: PgConn -> unit) =
         c.LastProgress <- Environment.TickCount64
+        c.LastRecv <- c.LastProgress
+        c.Stalled <- false
         re <- re + n
         let mutable go = true
         while go && not c.Broken && re - rs >= 5 do
@@ -488,8 +500,9 @@ type PgConn(sock: Socket, index: int, isWrite: bool, requeue: Func<PgQuery, bool
                 let q = inflight.Dequeue()
                 c.Inflight <- c.Inflight - 1
                 cur <- null
-                q.Retry()
-                c.Submit q |> ignore
+                if not (obj.ReferenceEquals(q, sink)) then
+                    q.Retry()
+                    c.Submit q |> ignore
         | _ -> ()
 
     member private c.Handle(typ: byte, start: int, blen: int, freed: PgConn -> unit) =
@@ -528,6 +541,20 @@ type PgConn(sock: Socket, index: int, isWrite: bool, requeue: Func<PgQuery, bool
             (try q.Done err with e -> eprintfn "%O" e)
             freed c
         | _ -> () // BindComplete, ParseComplete, NoData, notices, parameter status: nothing
+
+    /// Hedging (read connections): every read still owed here that `resend` takes (true = sent on another
+    /// connection) leaves its place to `sink`, so this connection's late answers go nowhere. Returns how many moved.
+    member c.Hedge(resend: Func<PgQuery, bool>, limit: int) =
+        c.Stalled <- true
+        let mutable moved = 0
+        for _ in 1 .. inflight.Count do
+            let q = inflight.Dequeue()
+            if moved < limit && not (obj.ReferenceEquals(q, sink)) && resend.Invoke q then
+                inflight.Enqueue sink
+                moved <- moved + 1
+            else inflight.Enqueue q
+        cur <- null
+        moved
 
     member c.Fail(why: string) =
         if not c.Broken then
@@ -665,6 +692,10 @@ let connect (url: string) (options: string) (prepare: bool) =
         | true, ip -> ip
         | _ -> Dns.GetHostAddresses(host).[0]
     let s = new Socket(addr.AddressFamily, SocketType.Stream, ProtocolType.Tcp, NoDelay = true)
+    // PG_RCVBUF: a fixed receive buffer (bytes) on the Postgres sockets, set before connect so the window matches
+    match Int32.TryParse(Environment.GetEnvironmentVariable "PG_RCVBUF") with
+    | true, v when v > 0 -> s.ReceiveBufferSize <- v
+    | _ -> ()
     s.Connect(IPEndPoint(addr, port))
     // linear retransmission timeouts while few segments are in flight (TCP_THIN_LINEAR_TIMEOUTS; PG_THIN=0: off), so a
     // connection whose retransmission is lost again doesn't back off exponentially;

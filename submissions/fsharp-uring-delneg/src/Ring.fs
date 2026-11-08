@@ -231,6 +231,18 @@ type Ring(sqEntries0: uint32, cqEntries0: uint32) =
         wr32 (s + 28n) flags
         wr64 (s + 32n) ud
 
+    /// a send on a fixed file linked to the next SQE (which runs only if this one sent everything: MSG_WAITALL);
+    /// no CQE on success
+    member this.SendHead(sock: int, addr: nativeint, len: int, flags: uint32, ud: uint64) =
+        let s = this.Sqe()
+        wr8 s OP_SEND
+        wr8 (s + 1n) (SQE_FIXED_FILE ||| (1uy <<< 2) ||| SQE_CQE_SKIP_SUCCESS)
+        wri32 (s + 4n) sock
+        wr64 (s + 16n) (uint64 addr)
+        wr32 (s + 24n) (uint32 len)
+        wr32 (s + 28n) flags
+        wr64 (s + 32n) ud
+
     /// read(2) of an eventfd's 8-byte counter
     member this.Read(fd: int, addr: nativeint, len: int, ud: uint64) =
         let s = this.Sqe()

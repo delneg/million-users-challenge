@@ -9,7 +9,7 @@ Upstream README rules (read 7 Nov 2026 at `d229b63`), SPEC.md and the maintainer
 | 2 | PostgreSQL 18 at `$DATABASE_URL` only; no Redis/Memcached/SQLite; no server-wide settings | only Postgres; no `SET`, no `ALTER SYSTEM/DATABASE/ROLE` |
 | 3 | the SPEC's queries, one per request; prepare, pipeline, batch writes OK; no work moved into Postgres | the five SPEC statements verbatim (`LIMIT 20` literal), prepared once per connection, one per request; reads share a `Sync`, writes group-committed |
 | 4 | schema and data fixed | no DDL |
-| 5 | at most 512 Postgres connections | 64 read + 32 write in total (split over the threads); startup fails if threads x per-thread > 512 |
+| 5 | at most 512 Postgres connections | 192 read + 64 write in total by default (split over the threads); startup fails if the total is over 512 |
 | 6 | 42/42 on `test/run.sh` | checked on 4 and 8 cores, buffer ring and PROVIDE_BUFFERS fallback |
 | 7 | no caching across requests (responses, query results, tables, JWT verifications) | every request reads Postgres while it is served; nothing about a token is kept; kept between requests: connections, prepared statements, receive buffers, the HMAC key pads, per-thread scratch buffers |
 | 8 | writes committed before the response | a write's response waits for the `ReadyForQuery` of its `Sync` (after the implicit transaction commits); `synchronous_commit` untouched |
