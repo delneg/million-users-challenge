@@ -402,3 +402,22 @@ retransmission lost again during SACK recovery: the sender's congestion window i
 reveal the second loss, and a probe's answer can't go out either. Each such timeout stalls the ~30 queries in
 flight on that connection, which is the >200 ms share. Next: shallower pipelines (PG_DEPTH 16, 8) with and without
 the probe, which covers the lone-segment tail losses short flights make.
+
+## Y4/Y5 (8 Nov 10:12-10:43 UTC): shallower pipelines, 1% PG loss, 2 reps
+
+| config | >200 ms | p99.9 ms | segments | PG kcycles/req |
+|---|---|---|---|---|
+| v19, depth 32 | 0.135 / 0.114% | 228 / 219 | 4.19-4.25 | 225-242 |
+| v20 (probe), depth 16 | 0.071 / 0.163% | 130 / 230 | 4.31 | 246-257 |
+| v19, depth 16 | 0.126 / 0.120% | 225 / 225 | 4.31-4.32 | 266-291 |
+| v20 (probe), depth 8 | 0.213 / 0.219% | 281 / 284 | 4.49-4.52 | 276-278 |
+
+No loss (v20): depth 16 >200 ms 0%, depth 8 0.019%. Depth does not move the loss tail: fewer queries ride each
+connection, but the shallower flights send more Postgres segments, so stalls get more frequent as they get
+smaller. And every step down costs packets (+3% at 16, +7% at 8). Depth 32 stays.
+
+## V5 (8 Nov 10:43-11:05 UTC): 1M connections, 4 vCPU, 0.5% loss on all links, 5-min hold
+
+v11: p99 23.0 ms (worst 10 s window 27.4), p99.9 262.9, fail 0, timeouts 0, RSS 263 MB.
+v19: p99 27.4 ms (worst 65.4), p99.9 262.9, fail 0, timeouts 0, RSS 349 MB. Same picture; v19 went to PR #105
+(873e5ad) after its folder passed 42/42 with THREADS=4, 8, 16 and LEGACY_BUFS=1.
