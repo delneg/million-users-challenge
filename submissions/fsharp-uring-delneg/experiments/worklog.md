@@ -421,3 +421,7 @@ smaller. And every step down costs packets (+3% at 16, +7% at 8). Depth 32 stays
 v11: p99 23.0 ms (worst 10 s window 27.4), p99.9 262.9, fail 0, timeouts 0, RSS 263 MB.
 v19: p99 27.4 ms (worst 65.4), p99.9 262.9, fail 0, timeouts 0, RSS 349 MB. Same picture; v19 went to PR #105
 (873e5ad) after its folder passed 42/42 with THREADS=4, 8, 16 and LEGACY_BUFS=1.
+
+CI on #105 (873e5ad) failed: `io_uring_setup: errno 12` (ENOMEM) with SQ/CQ 16384/65536 on the GitHub runner,
+probably because its kernel counts ring memory against a small RLIMIT_MEMLOCK. The ring size change had no
+measured gain, so it is reverted to 4096/32768 (5a80ca3); CI green again.
