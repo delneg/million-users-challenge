@@ -513,3 +513,12 @@ links; queued: #35's merged code (m35) vs the #105 head (v22) vs v22 with #35's 
   separate the code that held 1.34M on the grader from the code that held 1.24M.
 - Next: the same at K=34 (~9.7k req/s per thread, the grader's failing step per thread): v22, m35 and v22 with all
   of #35's network defaults (64+32 at depth 128, NBUFS 8192, GZIP_TRAIN 0, QUICKACK_OFF 0, THIN_LTO 0, PG_THIN 0).
+
+## v23 (8 Nov 22:22 UTC): pushed to PR #105 (566e3af)
+
+The loopback screens can't separate the two layouts (both stall on the rig's Postgres), and the grader put #35's
+defaults 100k users ahead on 4 cores. v23 = the #105 head with #35's network defaults back: 64 + 32 connections at
+depth 128, NBUFS 8192, GZIP_TRAIN 0, QUICKACK_OFF 0, THIN_LTO 0, PG_THIN 0. Kept: TCP_DEFER_ACCEPT, the `/health`
+gate, reconnect timer, rate-limited error log, header trim, self-connect guard, read re-send on a lost connection,
+REARM_ALL. The other values stay as knobs (README updated). CI green (42/42). Box checks (42/42 x4, reconnect,
+no-loss screen) and the K=34 grader-load holds are queued.
