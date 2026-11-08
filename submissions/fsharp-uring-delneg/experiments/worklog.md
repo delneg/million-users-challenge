@@ -477,3 +477,25 @@ failed on a name clash with an existing `ready` field; renamed), reconnect 4 s.
 Non-200 answers in the first 10 s of 1M holds: v21 214 / 1,049 / 415, #105 head 0 / 276; v22 (first hold) 0.
 v22 1M holds: no loss p99 16.3 (worst 19.3), first-10 s non-200 0; 0.5% loss p99 27.4 (worst 220.9), first-10 s
 non-200 0, fail 0. Pushed to PR #105 (6e980c8, README note); CI green.
+
+## 8 Nov ~21:20 UTC: PR #105 scored at 5a80ca3
+
+| cores | held 5 min | req/s | p95 | p99 | app CPU | Postgres box |
+|---|---:|---:|---:|---:|---:|---:|
+| 16 | 1,000,000 (max) | 32,527 | 40.2 ms | 229 ms | 13% | 24% / 31% max |
+| 8 | 1,290,000 | 40,104 | 221 ms | 236 ms | 25% | 27% / 36% |
+| 4 | 1,240,000 | 38,829 | 58.7 ms | 232 ms | 38% | 24% / 32% |
+
+8 cores: the 2-min step at 1,391,997 failed (p95 853 ms, p99 1.43 s, CPU 25%); 4 cores: the step at 1,333,992 failed
+(p95 2.5 s, p99 3.4 s, CPU 48%). Below #35's acce162 run (1,330,000 / 1,340,000; its 4-core staircase passed
+1,529,979), and a re-score replaces the row: the entry is now #25. 16 cores improved (p95 216 -> 40 ms). Not
+merged: the head moved during the run (c1b6167, 6e980c8); 6e980c8 is queued for its own run.
+
+Defaults changed since #35: Postgres 64+32 at depth 128 -> 192+64 at depth 32, NBUFS 8192 -> 16384, GZIP_TRAIN 0 -> 1,
+listener QUICKACK_OFF and THIN_LTO, PG_THIN, REARM_ALL, a 10 s Postgres watchdog, read re-send on a lost connection,
+no Kestrel host. GC is the same in both (workstation, non-concurrent, set in the project file).
+
+The collapse came at ~42k req/s with ~1.33M connections, CPU under 50%: a stall, not CPU. Our 1M holds ran at
+16.7k req/s (K=60). New screen `h1mk`: 1M connections at K=26 s (~38k req/s, the 4-core regime), 0.5% loss on all
+links; queued: #35's merged code (m35) vs the #105 head (v22) vs v22 with #35's defaults
+(64+32, depth 128, NBUFS 8192, GZIP_TRAIN 0), 2 rounds.
