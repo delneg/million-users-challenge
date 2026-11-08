@@ -436,3 +436,32 @@ waits for a >= 200 ms timer on either side).
 
 C# #1 on the same screens did not start: its build needs the .NET 10 runtime, which is no longer on the box (only
 11). Not reinstalled; calibrations 1-2 already compare it on CPU and segments.
+
+## 8 Nov ~19:15 UTC: leaderboard check
+
+Upstream board (ranked by 4 cores): #1 is now `c-epoll-unorig-username` at 1,460,000 after #104 (TCP_DEFER_ACCEPT on
+its listeners and the first read right after accept): 4 cores 1,360,000 -> 1,460,000, 8 cores 1,400,000 ->
+1,360,000. The benchmark agent called it a per-socket option on the entry's own listeners (java-epoll-stohirov has
+it too, 5 s). C# #1 is #2 at 1,430,000. #100 (the same entry's hedged reads, SCHED_IDLE, text id/like_count) is held
+unscored: hedging runs a request's SPEC statement twice, sent to the maintainer for a rule-3 ruling. Hedging stays
+out here.
+
+v21 = PR #105 head + TCP_DEFER_ACCEPT (1 s, as #104; `DEFER_ACCEPT=0` turns it off). With io_uring, the receive
+armed after a multishot accept completes at once, a pass earlier. Queued: 42/42, 3 no-loss pairs against the #105
+head, 1M holds (ramp at 3,300 connections a second, like the grader's) with and without loss.
+
+## v21 results (8 Nov 19:36-20:29 UTC): TCP_DEFER_ACCEPT
+
+42/42 with THREADS=4, 8, LEGACY_BUFS=1 and DEFER_ACCEPT=0. No-loss screens, 3 pairs against the #105 head: segments
+4.164-4.176 vs 4.165-4.181 (delayed ACKs still inherited), p99.9 94-119 vs 94-169 ms, CPU within noise.
+
+| 1M hold, 4 vCPU, ramp 3,300 conn/s | p99 | worst 10 s | p99.9 | fail | server CPU (s) |
+|---|---|---|---|---|---|
+| #105 head, no loss | 16.3 | 16.3 | 19.3 | 0 | 328.7 |
+| v21, no loss | 16.3 | 16.3 | 19.3 | 0 | 323.9 |
+| #105 head, 0.5% loss | 46.2 | 220.9 | 262.9 | 0 | 353.6 |
+| v21, 0.5% loss | 23.0 | 27.4 | 262.9 | 0 | 323.6 |
+
+The holds' first 10 s windows show non-200 answers in most versions (v11 372, v13 230, #105 head 276, v21 214 and
+1,049): warm-up, excluded from the totals by the hold tool. Pushed to PR #105 (c1b6167, README row
+`DEFER_ACCEPT`); CI green. Next: what those warm-up answers are.
