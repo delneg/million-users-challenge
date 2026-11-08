@@ -465,3 +465,15 @@ head, 1M holds (ramp at 3,300 connections a second, like the grader's) with and 
 The holds' first 10 s windows show non-200 answers in most versions (v11 372, v13 230, #105 head 276, v21 214 and
 1,049): warm-up, excluded from the totals by the hold tool. Pushed to PR #105 (c1b6167, README row
 `DEFER_ACCEPT`); CI green. Next: what those warm-up answers are.
+
+## v22 (8 Nov 20:33- UTC): /health waits for every thread's Postgres connections
+
+The hold harness (like the grader) starts its load at the first `/health` 200. `/health` ran on whichever thread
+took the probe, so it could pass while other threads were still connecting; their first requests got 500 ("no
+database connection"). v22 = v21 + a process-wide count of threads that have had a read and a write connection;
+`/health` answers 503 until it reaches the thread count. 42/42 with THREADS=4, 8, 16 and LEGACY_BUFS=1 (first build
+failed on a name clash with an existing `ready` field; renamed), reconnect 4 s.
+
+Non-200 answers in the first 10 s of 1M holds: v21 214 / 1,049 / 415, #105 head 0 / 276; v22 (first hold) 0.
+v22 1M holds: no loss p99 16.3 (worst 19.3), first-10 s non-200 0; 0.5% loss p99 27.4 (worst 220.9), first-10 s
+non-200 0, fail 0. Pushed to PR #105 (6e980c8, README note); CI green.
