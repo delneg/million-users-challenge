@@ -645,3 +645,17 @@ run on one CPU before RPS spreads the protocol work, a limit shared by every ent
 would fit the 1.42-1.46M tie at the top. On loopback there's no NIC, GRO or RPS, which is one more reason the rig
 doesn't rank layouts the way the grader does. Receive packets per request on the app box: the client's request and
 its ACK of the response (2, out of our control), plus Postgres replies (1.61 segments per request before GRO).
+
+## R, last run (9 Nov 13:43-13:53 UTC)
+
+| R-v23-base3 | merged code, third time | 0.633 | 38.8 / 38.8 / 54.9 | 0.089 / 1.610 | 50.01M |
+
+Three identical runs: 0.589, 0.611, 0.633 cores (~7% spread), so every candidate above sits inside the noise. With
+`bytes_received` added to `pgsegs.txt`: Postgres sends 2,170 B per request to the server (1,348 B per segment, mostly
+full) and receives 43 B. Outside the post bodies, only the DataRow framing (~27 B per row: type, length, column count, five
+column lengths) is left; folding columns into one would cut maybe 15% of a feed reply, but it moves response building into
+SQL, the same rules question as `json_agg`, so it stays out.
+
+Second opinions, round 4 (the grader box setup, single-queue reading): GPT-6 Astra and Gemini 3.8 Flash both advised
+against a THREADS = cores - 1 PR without evidence (uncertain sign; the scheduler doesn't reserve a CPU without
+pinning) and saw no other in-process change aimed at that limit.
