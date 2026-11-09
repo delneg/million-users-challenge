@@ -78,6 +78,14 @@ and `THIN_LTO=1` sets `TCP_THIN_LINEAR_TIMEOUTS` on them (accepted sockets inher
 as in the scored Kestrel version. These are per-socket options, not sysctls.
 `TCP_NODELAY` everywhere.
 
+**A late reply puts its socket back into pingpong mode.** Linux holds the ACK of a request for up to 40 ms so it
+travels with the reply. When the reply comes later than that, the kernel sends a bare ACK packet and takes the
+socket out of that mode, so the next request on it is ACKed at once too: two extra packets per late reply, and
+replies are late exactly when the box's network is at its limit. After a reply slower than `LATE_ACK_MS` (30 ms)
+the server clears `TCP_QUICKACK` on the socket through `IORING_OP_URING_CMD` (the socket is a fixed file and has
+no descriptor), so only the first bare ACK is paid. On a kernel without socket commands (before 6.7) the first
+attempt fails and the option switches itself off.
+
 **Responses by hand**: compact JSON in the spec's key order, `created_at` from the binary `timestamptz` in UTC with
 milliseconds, strings escaped. Bodies of 512 bytes or more are gzipped (igzip level 0) when the client accepts it. `GZIP_TRAIN=1` rebuilds
 igzip's Huffman table about once a second from a live body's symbols (#9, #12), which takes a feed from ~2,240 to
@@ -108,9 +116,10 @@ All optional; the defaults are what gets benchmarked.
 | `NBUFS` | 8192 | 2 KB receive buffers per thread (a power of two, at most 32768) |
 | `REARM_ALL` | 1 | `0`: the old budget for re-arming receives that found no buffer |
 | `QUICKACK_OFF`, `THIN_LTO` | 0, 0 | listener TCP options above |
+| `LATE_ACK_MS` | 30 | after a reply slower than this, `TCP_QUICKACK` is cleared on the socket (above); `0`: off |
 | `DEFER_ACCEPT` | 1 | `TCP_DEFER_ACCEPT` seconds on the listeners; `0`: off |
 | `LEGACY_BUFS` | off | `1`: provided buffers through `IORING_OP_PROVIDE_BUFFERS` |
-| `MUC_STATS` | off | `1`: per-thread counters every 5 s (passes, completions, ENOBUFS, longest pass, GC pause, CQ drops) |
+| `MUC_STATS` | off | `1`: per-thread counters every 5 s (passes, completions, ENOBUFS, late-reply `TCP_QUICKACK` resets, longest pass, GC pause, CQ drops) |
 
 ## Correctness
 

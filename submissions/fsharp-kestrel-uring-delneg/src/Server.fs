@@ -173,6 +173,8 @@ type Ctx(id: int, finish: Ctx -> unit) =
     member val Name: byte[] = null with get, set
     member val Body: byte[] = null with get, set
     member val InUse = false with get, set
+    /// Stopwatch timestamp when the request was taken up (LATE_ACK_MS)
+    member val Started = 0L with get, set
     /// times this request's read was sent again after its Postgres connection was lost
     member val Bounces = 0 with get, set
     // the bytes to send: buffer, start, length, and how much went out
@@ -451,6 +453,8 @@ let private parseCreateBody (data: ReadOnlySpan<byte>) (body: byref<byte[]>) : b
 
 // user_data: op (3 bits) | slot (20) | gen (23) | extra (18: the request's id in the thread's pool)
 [<Literal>]
+let private OpSockOpt = 0UL
+[<Literal>]
 let private OpAccept = 1UL
 [<Literal>]
 let private OpRecv = 2UL
@@ -512,6 +516,21 @@ let private MaxRequest = 64 * 1024
 let private rearmAll = env "REARM_ALL" 1 = 1
 let private legacyForced = Environment.GetEnvironmentVariable "LEGACY_BUFS" = "1"
 let private stats = not (String.IsNullOrEmpty(Environment.GetEnvironmentVariable "MUC_STATS"))
+/// LATE_ACK_MS: after a reply that took longer than this, TCP_QUICKACK is cleared on the socket (one SQE). The kernel
+/// holds the ACK of a request for up to 40 ms to send it with the reply ("pingpong" mode); a reply later than that
+/// gets a bare ACK packet of its own and the socket leaves that mode, so the next request is ACKed at once as well:
+/// a second extra packet, right when replies are late because the box's network is at its limit. Clearing TCP_QUICKACK
+/// puts the socket back, so only the one bare ACK is paid. 0: off.
+let private lateAckMs = env "LATE_ACK_MS" 30
+let private lateAckTicks = int64 lateAckMs * Diagnostics.Stopwatch.Frequency / 1000L
+/// the value for TCP_QUICKACK (0), in memory the kernel reads when the SQE runs
+let private sockOptZero = GC.AllocateArray<int>(1, pinned = true)
+let private sockOptZeroAddr = Marshal.UnsafeAddrOfPinnedArrayElement(sockOptZero, 0)
+/// SOL_TCP and TCP_QUICKACK, as the socket command takes them
+[<Literal>]
+let private LateAckLevel = 6u
+[<Literal>]
+let private LateAckOpt = 12u
 
 /// a new Postgres connection for a thread (from the connector thread)
 [<Sealed; AllowNullLiteral>]
@@ -596,6 +615,9 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
     let mutable stCqes = 0L
     let mutable stNoBufs = 0L
     let mutable stReqs = 0L
+    let mutable stLateAcks = 0L
+    // LATE_ACK_MS: off after the kernel refuses the first setsockopt command (older than 6.7)
+    let mutable lateAck = lateAckTicks > 0L
     let mutable stLast = Environment.TickCount64
     let mutable stMaxCqes = 0
     let mutable stMaxPass = 0L
@@ -658,6 +680,7 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
                 ctxs.Add c
                 c
         c.InUse <- true
+        if lateAck then c.Started <- Diagnostics.Stopwatch.GetTimestamp()
         c
 
     member private _.Return(c: Ctx) =
@@ -1044,6 +1067,10 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
             this.SendRest c
         else
             let close = c.CloseAfter
+            // a late reply: the kernel has ACKed the request on its own and left pingpong mode; put the socket back
+            if lateAck && not close && Diagnostics.Stopwatch.GetTimestamp() - c.Started > lateAckTicks then
+                stLateAcks <- stLateAcks + 1L
+                ring.SetSockOpt(slot, LateAckLevel, LateAckOpt, sockOptZeroAddr, 4, ud OpSockOpt slot gen.[slot] 0)
             this.Return c
             state.[slot] <- state.[slot] &&& ~~~Busy
             if close then this.CloseSlot slot else this.ServeBuffered slot
@@ -1058,6 +1085,11 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
             ring.Read(mailbox.Fd, mailbox.Sink, 8, OpEvent)
         | OpPgRecv
         | OpPgSend -> this.OnPg(e.U, e.Res)
+        | OpSockOpt ->
+            // -EBADF / -ENOTSOCK: the connection closed meanwhile; anything else means the kernel has no socket commands
+            if e.Res < 0 && e.Res <> -9 && e.Res <> -88 && lateAck then
+                lateAck <- false
+                if index = 0 then eprintfn "LATE_ACK_MS off: setsockopt through io_uring failed with errno %d" -e.Res
         | _ -> ()
 
     member private this.Run() =
@@ -1143,8 +1175,8 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
                     if Environment.TickCount64 - stLast > 5000L then
                         stLast <- Environment.TickCount64
                         let inflight = pg |> Array.sumBy (fun c -> if isNull c then 0 else c.Inflight)
-                        eprintfn "io-%d passes=%d cqes=%d reqs=%d nobufs=%d open=%d ctxs=%d pg=%d inflight=%d gc=%d/%d/%d maxcqes=%d maxpass=%.1fms gcpause=%.0fms rearmq=%d cqdrop=%d"
-                            index stPasses stCqes stReqs stNoBufs openCount ctxs.Count
+                        eprintfn "io-%d passes=%d cqes=%d reqs=%d nobufs=%d lateacks=%d open=%d ctxs=%d pg=%d inflight=%d gc=%d/%d/%d maxcqes=%d maxpass=%.1fms gcpause=%.0fms rearmq=%d cqdrop=%d"
+                            index stPasses stCqes stReqs stNoBufs stLateAcks openCount ctxs.Count
                             (pg |> Array.sumBy (fun c -> if isNull c then 0 else 1)) inflight
                             (GC.CollectionCount 0) (GC.CollectionCount 1) (GC.CollectionCount 2)
                             stMaxCqes (float stMaxPass * 1000.0 / float Diagnostics.Stopwatch.Frequency)
@@ -1155,6 +1187,7 @@ type Loop(index: int, listenFds: int[], slots: int, reads: int, writes: int, con
                         stCqes <- 0L
                         stNoBufs <- 0L
                         stReqs <- 0L
+                        stLateAcks <- 0L
 
 // ---------- listening sockets ----------
 

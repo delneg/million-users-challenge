@@ -35,6 +35,9 @@ let OP_SEND = 26uy
 let OP_RECV = 27uy
 let OP_PROVIDE_BUFFERS = 31uy
 let OP_SHUTDOWN = 34uy
+let OP_URING_CMD = 46uy
+/// IORING_OP_URING_CMD on a socket: cmd_op for setsockopt(2) (kernel 6.7+)
+let SOCKET_URING_OP_SETSOCKOPT = 3u
 
 let SQE_FIXED_FILE = 1uy
 let SQE_IO_HARDLINK = 1uy <<< 3
@@ -282,6 +285,20 @@ type Ring(sqEntries0: uint32, cqEntries0: uint32) =
         wr8 (c + 1n) SQE_CQE_SKIP_SUCCESS
         wr32 (c + 44n) (uint32 (slot + 1))
         wr64 (c + 32n) ud
+
+    /// setsockopt(2) on a fixed file (a client socket has no fd): IORING_OP_URING_CMD with SOCKET_URING_OP_SETSOCKOPT,
+    /// level and optname in the SQE, the value at `addr` (kernel 6.7+; older kernels complete it with -EINVAL/-EOPNOTSUPP)
+    member this.SetSockOpt(slot: int, level: uint32, optname: uint32, addr: nativeint, optlen: int, ud: uint64) =
+        let s = this.Sqe()
+        wr8 s OP_URING_CMD
+        wr8 (s + 1n) (SQE_FIXED_FILE ||| SQE_CQE_SKIP_SUCCESS) // only a failure posts a completion
+        wri32 (s + 4n) slot
+        wr32 (s + 8n) SOCKET_URING_OP_SETSOCKOPT
+        wr32 (s + 16n) level
+        wr32 (s + 20n) optname
+        wr64 (s + 32n) ud
+        wr32 (s + 44n) (uint32 optlen)
+        wr64 (s + 48n) (uint64 addr)
 
     /// legacy provided buffers: hands `count` buffers of `size` bytes from id `first` (at `addr`) to group `group`
     member this.Provide(group: uint16, first: int, count: int, addr: nativeint, size: int, ud: uint64) =
