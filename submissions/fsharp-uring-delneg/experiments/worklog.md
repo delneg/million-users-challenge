@@ -539,3 +539,6 @@ cores, so the rig does not predict the board on this question (as calibration 1 
 v23 box checks: 42/42 with THREADS=4, 8, 16 and LEGACY_BUFS=1. The first reconnect check reported a failure, but it
 counted on 64 connections per thread and v23 has 24: all four threads were back at 24. `pgre` now reads the expected
 count from the server's startup line.
+v23 (566e3af) on the box, 9 Nov 06:52-07:13 UTC: reconnect 4 s (fixed check); K=34 grader-load hold p95 32.6, p99
+38.8, fail 0; 1M hold (0.5% loss) p99 38.8 ms (worst 10 s 220.9), p99.9 262.9, fail 0, no warm-up non-200s, RSS
+175 MB.
