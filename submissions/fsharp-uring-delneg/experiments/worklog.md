@@ -542,3 +542,16 @@ count from the server's startup line.
 v23 (566e3af) on the box, 9 Nov 06:52-07:13 UTC: reconnect 4 s (fixed check); K=34 grader-load hold p95 32.6, p99
 38.8, fail 0; 1M hold (0.5% loss) p99 38.8 ms (worst 10 s 220.9), p99.9 262.9, fail 0, no warm-up non-200s, RSS
 175 MB.
+
+## P (9 Nov 07:14-07:38 UTC): packets per request on v23, GSO off on lo (wire segments), 2 reps
+
+| v23 + | segments/req | bytes per response | srv->cli pkts |
+|---|---|---|---|
+| (as pushed) | 4.100 / 4.100 | 716 | 1.001 / 1.000 |
+| GZIP_TRAIN=1 | 4.103 / 4.100 | 614 | 1.004 / 1.001 |
+| QUICKACK_OFF=1 | 4.103 / 4.100 | 716 | 1.003 / 1.001 |
+| both | 4.101 | 613 | 1.001 |
+
+Neither knob changes the packet count on this seed: a response is one segment with or without Huffman retraining,
+and the request's ACK rides on the response either way. Restoring #35's defaults cost no packets; depth 128 gives
+4.100 against ~4.19 at depth 32.
