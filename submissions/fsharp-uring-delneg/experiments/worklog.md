@@ -659,3 +659,21 @@ SQL, the same rules question as `json_agg`, so it stays out.
 Second opinions, round 4 (the grader box setup, single-queue reading): GPT-6 Astra and Gemini 3.8 Flash both advised
 against a THREADS = cores - 1 PR without evidence (uncertain sign; the scheduler doesn't reserve a CPU without
 pinning) and saw no other in-process change aimed at that limit.
+
+## T, gzip sizes, the NIC, PR #109 (9 Nov 13:54-14:31 UTC)
+
+- Run 57 (crash, rig limit): 4 vs 3 threads on 4 server vCPU at 900k connections, K=34: the 4-thread run collapsed at
+  0.93 server cores (p95 746.6 ms) because the load generator had one CPU; stopped and redone smaller.
+- Run 58: 3 vs 2 threads on 3 server vCPU (660k, K=34, 48+24 total, hold on 2 CPUs): 0.623 vs 0.595 cores, p95 32.6
+  both, p99 32.6 / 38.8. One thread fewer than cores costs nothing measurable at this load.
+- Run 59: feed gzip sizes (raw 5,102 B, headers 120 B): igzip L0 2,243 / L0+train 1,961 / L1-L3 1,934-1,918; libdeflate
+  L1 1,901, L6 1,866, L9 1,863, L12 1,838. No level fits a feed in one segment; the post reply is 307 B.
+- `LEADERBOARD.md`: the grader's app box is a Synteq VPS, 16 dedicated vCPU, Xeon Platinum 8260. Our box (Synteq, same
+  CPU model, 8 vCPU): `virtio_net`, `ethtool -l` combined 1 (max 1), RX ring 1024, TX ring 256. With the setup script
+  configuring RPS on `rx-0` only, the grader box very likely has one receive queue too: one core takes every packet's
+  interrupt and GRO. The ~212 ms p95 at 1M on 16 cores (14% app CPU, load generators in the same datacenter) fits >5%
+  of requests waiting out the 200 ms minimum RTO, i.e. drops even below the limit (unverified).
+- Run 60: PR #109, `THREADS` default cores - 1 (3 on 4), Postgres totals 64+32 (22+11 per thread on 4 cores),
+  branch `fsharp-kestrel-uring-threads` from upstream main, independent of #108. Second opinions (round 5, with
+  the NIC evidence): both for a PR now as a separate experiment; strongest risk named: three threads may not free the
+  interrupt core and leave less concurrency near the limit.
