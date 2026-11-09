@@ -522,3 +522,20 @@ depth 128, NBUFS 8192, GZIP_TRAIN 0, QUICKACK_OFF 0, THIN_LTO 0, PG_THIN 0. Kept
 gate, reconnect timer, rate-limited error log, header trim, self-connect guard, read re-send on a lost connection,
 REARM_ALL. The other values stay as knobs (README updated). CI green (42/42). Box checks (42/42 x4, reconnect,
 no-loss screen) and the K=34 grader-load holds are queued.
+
+## G3 (8 Nov 22:15-23:17 UTC): grader-load holds at K=34
+
+660k connections, 2 threads (~330k each), K=34 (~9.7k req/s per thread), 0.5% loss on all links, 2 reps:
+
+| config | p95 | p99 | worst 10 s | server CPU s |
+|---|---|---|---|---|
+| v22, 192+64 at depth 32 (halved: 96+32) | 23.0 / 23.0 | 27.4 / 27.4 | 27.4 / 32.6 | 288 / 272 |
+| #35 merged code (m35), 64+32 at 128 (halved) | 38.8 / 38.8 | 46.2 / 46.2 | 220.9 / 220.9 | 276 / 277 |
+| v22 with all of #35's defaults (= v23) | 32.6 / 38.8 | 38.8 / 38.8 | 262.9 / 77.8 | 280 / 279 |
+
+No stall at this rate. The rig again prefers the shallow layout; the grader preferred #35's by 100k users on 4
+cores, so the rig does not predict the board on this question (as calibration 1 already showed for CPU).
+
+v23 box checks: 42/42 with THREADS=4, 8, 16 and LEGACY_BUFS=1. The first reconnect check reported a failure, but it
+counted on 64 connections per thread and v23 has 24: all four threads were back at 24. `pgre` now reads the expected
+count from the server's startup line.
