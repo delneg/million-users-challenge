@@ -677,3 +677,6 @@ pinning) and saw no other in-process change aimed at that limit.
   branch `fsharp-kestrel-uring-threads` from upstream main, independent of #108. Second opinions (round 5, with
   the NIC evidence): both for a PR now as a separate experiment; strongest risk named: three threads may not free the
   interrupt core and leave less concurrency near the limit.
+- Run 61: branch `fsharp-kestrel-uring-combo` (c200975, #109 + #108, pushed without a PR) built on the box as v24:
+  42/42, and a hold on 3 server vCPU with its own defaults (2 threads, 64+32): 0.580 cores, p95 32.6, p99 38.8.
+  Ready to open if both PRs score above 1.42M.
