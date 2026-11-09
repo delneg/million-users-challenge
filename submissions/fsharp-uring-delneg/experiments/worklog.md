@@ -555,3 +555,48 @@ v23 (566e3af) on the box, 9 Nov 06:52-07:13 UTC: reconnect 4 s (fixed check); K=
 Neither knob changes the packet count on this seed: a response is one segment with or without Huffman retraining,
 and the request's ACK rides on the response either way. Restoring #35's defaults cost no packets; depth 128 gives
 4.100 against ~4.19 at depth 32.
+
+## C (9 Nov 07:45-09:20 UTC): congested link instead of random loss
+
+`scale2.sh` takes `NETEM_EXTRA` / `NETEM_LIMIT` (harness only, removed after the run): a netem rate cap with a
+2,000-packet queue on lo, no random loss, on the 2-thread grader-load screen (660k connections, K=34). Uncapped,
+a run moves ~35 GB / 50M packets (v23 3.6% more bytes than v22: no Huffman retraining; packets equal).
+
+| cap | v23 (#105 head) | v22 (192+64 at 32) |
+|---|---|---|
+| 500 Mbit (bytes) | collapse: 2.7M drops (5%), p50 10-14 s, timeouts | not run |
+| 1000 Mbit | 0 drops, p95 38.8, p99 38.8 | 0 drops, p95 19.3, p99 23.0 |
+| 850 Mbit | 0 drops, p95 32.6, p99 38.8 (worst 65.4) | 0 drops, p95 19.3, p99 27.4 (worst 220.9) |
+
+The packets-per-second runs (`rate X packetoverhead 10000`) never installed: this tc takes the overhead
+positionally (`rate X 10000`); the harness ran them uncapped (0 drops, as expected). Re-run with the fixed syntax
+(Cq, 09:17-10:23 UTC; 10,000 B charged per packet, so the cap is mostly a packet rate, ~100k pps demand):
+
+| cap | v23 | v22 |
+|---|---|---|
+| 10g | 0 drops, p95 38.8, p99 38.8 | not run |
+| 9g | 0 drops, p99 38.8 | 2,040 drops, p99 27.4, p999 372 |
+| 8.5g | 0 drops, p99 38.8 | 10,625 drops, p99 23.0, 801 timeouts |
+| 8g | collapse: 190,774 drops, 944 timeouts, p95 3.6 s, p99 7.2 s | 0 drops, p99 23.0 |
+
+Not monotonic (v22 dropped at 9g and 8.5g but not at 8g), and the 8g collapse goes against the grader's preference
+for v23's layout. Run 50, discard: a link cap on lo doesn't reproduce the grader either.
+v23's median is ~27 ms against ~16 ms for v22 on every screen (depth-128 batching), far under the 500 ms limit.
+
+## Grader result for 566e3af (9 Nov, ~12:15 UTC)
+
+#105 re-scored at 566e3af: 1,000,000 (max) / 1,320,000 / **1,420,000** (16/8/4 cores), p95 212/227/227 ms, app CPU
+14/26/46 %, Postgres box 25-35 %. Up from 1,290,000 / 1,240,000 at 5a80ca3. Merged, #3 on the board (ranked by 4 cores).
+Failed steps: 8 cores at 1,422,000 (p95 2.9 s, CPU 25 %), 4 cores at 1,519,980 (p95 5.7 s, CPU 51 %).
+
+Reading: the limit is ~1.42-1.52M on both 4 and 8 cores, while app CPU is about 2 cores in every row (14 % of 16,
+26 % of 8, 46-51 % of 4). The README says the kernel's network processing runs on the same cores on 4 and 8, so
+the CPU the grader reports likely leaves out much of the kernel's share. The leaders sit at 1.43M (C#) and 1.46M (C), the same
+ceiling. What can still move: kernel and app work per request (packets, syscalls, wake-ups).
+
+## R (9 Nov 12:41 UTC-): server CPU and packets per request on the merged code
+
+`scale2.sh` now also writes `pgsegs.txt` (segments in and out on the server's Postgres sockets, from `ss -ti`, before
+the server stops), so packets split into client and Postgres traffic. Metric: server cgroup CPU microseconds per
+request over the run (`mon.log`), h2g K=34, no loss, 32+16 connections (the 4-core per-thread layout).
+(The old `G-v23-base` run folder from 8 Nov was overwritten by a mislabeled start of this series.)
