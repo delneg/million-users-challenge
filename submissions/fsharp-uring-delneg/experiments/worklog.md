@@ -600,3 +600,48 @@ ceiling. What can still move: kernel and app work per request (packets, syscalls
 the server stops), so packets split into client and Postgres traffic. Metric: server cgroup CPU microseconds per
 request over the run (`mon.log`), h2g K=34, no loss, 32+16 connections (the 4-core per-thread layout).
 (The old `G-v23-base` run folder from 8 Nov was overwritten by a mislabeled start of this series.)
+
+`q/steady.sh` reads the cgroup CPU from `mon.log` between 250 s and 520 s after the start (after the 231 s
+warm-up), so the ramp doesn't count. Same load in every run (660k connections, K=34, ~19.4k req/s, 2 threads).
+
+| run | change | steady cores | p95 / p99 / p99.9 ms | Postgres segs out / in per request | lo packets |
+|---|---|---|---|---|---|
+| R-v23-base | merged code, 32+16 | 0.589 | 32.6 / 38.8 / 38.8 | 0.089 / 1.610 | 49.97M |
+| R-v23-c16 | 16+8 connections | 0.584 (-0.8%) | 32.6 / 38.8 / 38.8 | 0.089 / 1.610 | 50.03M |
+| R-v23-w8 | WAIT_US 8000 | 0.590 (+0.2%) | 54.9 / 54.9 / 65.4 | 0.082 / 1.608 | 52.03M |
+| R-v23-base2 | merged code again | 0.611 (+3.7%) | 32.6 / 38.8 / 38.8 | 0.089 / 1.610 | 49.99M |
+
+| R-v23-gz | GZIP_TRAIN=1 | 0.584 (-0.8%) | 32.6 / 38.8 / 65.4 | 0.089 / 1.610 | 49.97M (3.5% fewer bytes) |
+
+Two identical runs differ by 3.7% in steady CPU, so the floor for this metric is ~4%. Run 54, discard: gzip
+retraining saves bytes but no CPU and no packets.
+
+- Runs 51-52, discard: neither fewer connections nor a longer wait changes CPU at this per-thread rate; the wait
+  only adds latency. Fewer connections don't make bigger sends because each 4 ms pass already goes to the first
+  connection with room (Fill), so the send count per pass is the same.
+- Run 53: a 2.9 s tcpdump of steady client traffic: 91,259 requests, 91,136 responses, 91,136 client ACKs, 1 server
+  pure ACK. Three packets per request is the floor for request/response (the server's ACK rides on the response).
+  The ~4 per request in tc's total come from the 660k handshakes and closes. The Postgres inbound bytes are the 20
+  post bodies per feed. Nothing removable left on the wire.
+- Second opinions (GPT-6 Astra and Gemini 3.8 Flash, three rounds) proposed binary result columns (already done:
+  created_at binary, ids as text on purpose), a per-connection memory cut (app RSS extrapolates to ~0.4 GB at 1.5M),
+  WAIT_US 8000 and fewer connections (both measured above). Both ended on keeping the merged code.
+| R-v23-900k | 900k connections, K=46 (same req/s) | 0.625 (+2-6%, window overlaps the 273 s ramp) | 38.8 / 38.8 / 262.9 | 0.091 / 1.610 | 56.45M |
+
+Run 55: 36% more connections at the same request rate cost little CPU (RSS 162-220 MB); not a connection-count limit.
+
+## PR #108 (9 Nov 13:40 UTC): GZIP_TRAIN on by default
+
+Branch `fsharp-kestrel-uring-gztrain` from upstream main (the merged #105), one line: `GZIP_TRAIN` default 0 -> 1, README
+updated. Rig: 3.5% fewer bytes, same packets and CPU (run 54). The scored 566e3af had it off, so its score isolates
+this one change.
+
+## The grader box (from `box/setup-app-box.sh`)
+
+somaxconn and tcp_max_syn_backlog 65535, netdev_max_backlog 250000, tcp_mem 1572864/2097152/3145728 pages (6/8/12 GB),
+tcp_rmem/wmem 4096 16384 4194304, fq qdisc (limit 200000, flow_limit 1000), and RPS on `rx-0` only, across all CPUs
+with RFS (65536 flow entries). Unverified reading: if the NIC has one receive queue, every packet's interrupt and GRO
+run on one CPU before RPS spreads the protocol work, a limit shared by every entry and unrelated to core count; that
+would fit the 1.42-1.46M tie at the top. On loopback there's no NIC, GRO or RPS, which is one more reason the rig
+doesn't rank layouts the way the grader does. Receive packets per request on the app box: the client's request and
+its ACK of the response (2, out of our control), plus Postgres replies (1.61 segments per request before GRO).
